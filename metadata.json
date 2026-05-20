@@ -1,0 +1,8 @@
+{
+  "name": "Game Day App",
+  "description": "A modern sports match day app for teams, coaches, and supporters with real-time chat and game tracking.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": []
+}
