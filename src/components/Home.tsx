@@ -638,27 +638,113 @@ export default function Home({ user, onTabChange }: HomeProps) {
         </motion.div>
 
         {/* Quick actions */}
-        <div className={`grid ${isCoach || user?.role === 'club' ? 'grid-cols-3' : 'grid-cols-2'} gap-2 px-4`}>
-          {[
-            ...(isCoach || user?.role === 'club' ? [
+        {isCoach || user?.role === 'club' ? (
+          <div className="grid grid-cols-3 gap-2 px-4">
+            {[
               { label: 'Broadcast', Icon: Megaphone, filled: true, action: () => setIsBroadcastOpen(!isBroadcastOpen) },
-            ] : []),
-            { label: 'My Teams', Icon: Users, filled: false, action: () => onTabChange('teams') },
-            ...(isCoach || user?.role === 'club' ? [
+              { label: 'My Teams', Icon: Users, filled: false, action: () => onTabChange('teams') },
               { label: 'Add Event', Icon: Sparkles, filled: false, action: () => { localStorage.setItem('gameday_open_create_event', '1'); onTabChange('schedule'); } },
-            ] : [
-              { label: 'Schedule', Icon: Calendar, filled: false, action: () => onTabChange('schedule') },
-            ]),
-          ].map((q, i) => (
-            <button key={i} onClick={q.action}
-              className="bg-white rounded-2xl p-3 flex flex-col items-center gap-1.5 active:scale-95 transition-transform shadow-sm border border-slate-100">
-              <div className={`w-9 h-9 rounded-xl flex items-center justify-center ${q.filled ? 'bg-primary text-white' : 'bg-primary/10 text-primary'}`}>
-                <q.Icon className="w-4 h-4" />
+            ].map((q, i) => (
+              <button key={i} onClick={q.action}
+                className="bg-white rounded-2xl p-3 flex flex-col items-center gap-1.5 active:scale-95 transition-transform shadow-sm border border-slate-100">
+                <div className={`w-9 h-9 rounded-xl flex items-center justify-center ${q.filled ? 'bg-primary text-white' : 'bg-primary/10 text-primary'}`}>
+                  <q.Icon className="w-4 h-4" />
+                </div>
+                <span className="text-[9px] font-black italic text-slate-700 uppercase tracking-[0.14em]">{q.label}</span>
+              </button>
+            ))}
+          </div>
+        ) : (
+          (() => {
+            // Calculate this week's attendance stats for the player
+            const now = new Date();
+            const startOfWeek = new Date(now);
+            startOfWeek.setDate(now.getDate() - now.getDay() + 1); // Monday
+            startOfWeek.setHours(0, 0, 0, 0);
+            const endOfWeek = new Date(startOfWeek);
+            endOfWeek.setDate(startOfWeek.getDate() + 6); // Sunday
+            endOfWeek.setHours(23, 59, 59, 999);
+
+            const weekEvents = allEvents.filter(e => {
+              const d = parseEventDate(e.date);
+              return d >= startOfWeek && d <= endOfWeek;
+            });
+
+            let goingCount = 0;
+            let absentCount = 0;
+            let noResponseCount = 0;
+            weekEvents.forEach(e => {
+              const status = attendance[e.id]?.status;
+              if (status === 'going') goingCount++;
+              else if (status === 'absent') absentCount++;
+              else noResponseCount++;
+            });
+
+            return (
+              <div className="grid grid-cols-2 gap-2 px-4">
+                {/* Weekly attendance card */}
+                <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-3">
+                  <h3 className="text-[9px] font-black text-slate-900 uppercase italic tracking-[0.14em] mb-2">This Week</h3>
+                  <div className="flex items-center gap-2">
+                    <div className="flex flex-col items-center flex-1 bg-emerald-50 rounded-lg py-1.5">
+                      <span className="text-[18px] font-semibold text-emerald-600 leading-none">{goingCount}</span>
+                      <span className="text-[7px] font-black text-emerald-600 uppercase tracking-wider">Going</span>
+                    </div>
+                    <div className="flex flex-col items-center flex-1 bg-red-50 rounded-lg py-1.5">
+                      <span className="text-[18px] font-semibold text-red-500 leading-none">{absentCount}</span>
+                      <span className="text-[7px] font-black text-red-500 uppercase tracking-wider">Out</span>
+                    </div>
+                    <div className="flex flex-col items-center flex-1 bg-slate-100 rounded-lg py-1.5">
+                      <span className="text-[18px] font-semibold text-slate-500 leading-none">{noResponseCount}</span>
+                      <span className="text-[7px] font-black text-slate-500 uppercase tracking-wider">TBD</span>
+                    </div>
+                  </div>
+                </div>
+                {/* Events this week */}
+                <button
+                  onClick={() => onTabChange('schedule')}
+                  className="bg-white rounded-2xl p-3 flex flex-col items-center justify-center gap-1.5 active:scale-95 transition-transform shadow-sm border border-slate-100"
+                >
+                  {(() => {
+                    const EVENT_COLORS: Record<string, { bg: string; text: string }> = {
+                      training: { bg: 'bg-orange-100', text: 'text-orange-600' },
+                      match:    { bg: 'bg-red-100',    text: 'text-red-500' },
+                      meeting:  { bg: 'bg-amber-100',  text: 'text-amber-600' },
+                      event:    { bg: 'bg-purple-100', text: 'text-purple-500' },
+                      custom:   { bg: 'bg-slate-100',  text: 'text-slate-500' },
+                    };
+                    const typeCounts: Record<string, number> = {};
+                    weekEvents.forEach(e => {
+                      const t = e.type || 'event';
+                      typeCounts[t] = (typeCounts[t] || 0) + 1;
+                    });
+                    const entries = Object.entries(typeCounts);
+                    return entries.length > 0 ? (
+                      <div className="flex items-center gap-1 flex-wrap justify-center">
+                        {entries.map(([type, count]) => {
+                          const style = EVENT_COLORS[type] || EVENT_COLORS.event;
+                          return (
+                            <span
+                              key={type}
+                              className={`inline-flex items-center justify-center w-6 h-6 rounded-lg text-[11px] font-black ${style.bg} ${style.text}`}
+                            >
+                              {count}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="w-9 h-9 rounded-xl flex items-center justify-center bg-primary/10 text-primary">
+                        <Calendar className="w-4 h-4" />
+                      </div>
+                    );
+                  })()}
+                  <span className="text-[9px] font-black italic text-slate-700 uppercase tracking-[0.14em]">Events</span>
+                </button>
               </div>
-              <span className="text-[9px] font-black italic text-slate-700 uppercase tracking-[0.14em]">{q.label}</span>
-            </button>
-          ))}
-        </div>
+            );
+          })()
+        )}
 
         {isLoading ? (
           <div className="space-y-4">

@@ -92,6 +92,7 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
   // New event form state
   const [newEvent, setNewEvent] = useState({
     teamId: user?.teamIds?.[0] || MOCK_TEAMS[0].id,
+    selectedTeamIds: [user?.teamIds?.[0] || MOCK_TEAMS[0].id] as string[],
     type: 'training' as 'training' | 'match' | 'meeting' | 'event' | 'custom',
     title: '',
     time: '6:00 PM',
@@ -234,6 +235,7 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
         setIsSearchingLocation(false);
         setNewEvent({
           teamId: user?.teamIds?.[0] || MOCK_TEAMS[0].id,
+          selectedTeamIds: [user?.teamIds?.[0] || MOCK_TEAMS[0].id] as string[],
           type: 'training', title: '', time: '6:00 PM', location: '', notes: '',
           repeat: false, repeatDays: [],
       repeatStartDate: toLocalDateStr(new Date(calendarYear, calendarMonth, selectedDate)),
@@ -246,41 +248,43 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
     }
 
     const eventsToCreate: any[] = [];
+    const teamsToCreate = newEvent.selectedTeamIds.length > 0 ? newEvent.selectedTeamIds : [newEvent.teamId];
 
-    if (newEvent.repeat && newEvent.repeatDays.length > 0 && newEvent.repeatStartDate && newEvent.repeatEndDate) {
-      const start = new Date(newEvent.repeatStartDate + 'T00:00:00');
-      const end = new Date(newEvent.repeatEndDate + 'T00:00:00');
-      const cur = new Date(start);
-      const batchId = Date.now().toString();
-      let n = 1;
-      while (cur <= end) {
-        const dayName = cur.toLocaleDateString('en-US', { weekday: 'long' });
-        if (newEvent.repeatDays.includes(dayName)) {
-          eventsToCreate.push({
-            id: `${batchId}-${n}`,
-            title: newEvent.title,
-            type: newEvent.type,
-            time: newEvent.time,
-            location: newEvent.location,
-            notes: newEvent.notes,
-            pinLocation: newEvent.pinLocation,
-            teamId: newEvent.teamId,
-            date: toLocalDateStr(cur),
-          });
-          n++;
+    for (const tid of teamsToCreate) {
+      if (newEvent.repeat && newEvent.repeatDays.length > 0 && newEvent.repeatStartDate && newEvent.repeatEndDate) {
+        const start = new Date(newEvent.repeatStartDate + 'T00:00:00');
+        const end = new Date(newEvent.repeatEndDate + 'T00:00:00');
+        const cur = new Date(start);
+        const batchId = `${Date.now()}-${tid}`;
+        let n = 1;
+        while (cur <= end) {
+          const dayName = cur.toLocaleDateString('en-US', { weekday: 'long' });
+          if (newEvent.repeatDays.includes(dayName)) {
+            eventsToCreate.push({
+              id: `${batchId}-${n}`,
+              title: newEvent.title,
+              type: newEvent.type,
+              time: newEvent.time,
+              location: newEvent.location,
+              notes: newEvent.notes,
+              pinLocation: newEvent.pinLocation,
+              teamId: tid,
+              date: toLocalDateStr(cur),
+            });
+            n++;
+          }
+          cur.setDate(cur.getDate() + 1);
         }
-        cur.setDate(cur.getDate() + 1);
+      } else {
+        const _d = new Date(calendarYear, calendarMonth, selectedDate);
+        const dateStr = `${_d.getFullYear()}-${String(_d.getMonth() + 1).padStart(2, '0')}-${String(_d.getDate()).padStart(2, '0')}`;
+        eventsToCreate.push({
+          ...newEvent,
+          id: `${Date.now()}-${tid}`,
+          date: dateStr,
+          teamId: tid,
+        });
       }
-    } else {
-      // Single event — always save as YYYY-MM-DD using the navigated calendar date
-      const _d = new Date(calendarYear, calendarMonth, selectedDate);
-      const dateStr = `${_d.getFullYear()}-${String(_d.getMonth() + 1).padStart(2, '0')}-${String(_d.getDate()).padStart(2, '0')}`;
-      eventsToCreate.push({
-        ...newEvent,
-        id: Date.now().toString(),
-        date: dateStr,
-        teamId: newEvent.teamId,
-      });
     }
 
     // Persist to storage — gameday_update listener will reload state automatically
@@ -295,20 +299,24 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
       setScheduleView('week');
     }
 
-    // Send announcement (optional — only if team found in MOCK_TEAMS)
-    const team = MOCK_TEAMS.find(t => t.id === newEvent.teamId);
-    if (user && team) {
-      const isRepeat = eventsToCreate.length > 1;
-      StorageService.addAnnouncement({
-        senderId: user.id,
-        senderName: user.name,
-        teamId: newEvent.teamId,
-        teamName: team.name,
-        title: `📅 New ${newEvent.type.charAt(0).toUpperCase() + newEvent.type.slice(1)}: ${newEvent.title}`,
-        content: isRepeat
-          ? `${newEvent.title} scheduled every ${newEvent.repeatDays.join(' & ')} (${eventsToCreate.length} sessions).${newEvent.location ? ` Location: ${newEvent.location}.` : ''}${newEvent.notes ? ` Note: ${newEvent.notes}` : ''}`
-          : `${newEvent.title} on ${eventsToCreate[0].date} at ${newEvent.time}.${newEvent.location ? ` Location: ${newEvent.location}.` : ''}${newEvent.notes ? ` Note: ${newEvent.notes}` : ''}`,
-      });
+    // Send announcement for each selected team
+    const allTeamsList = [...MOCK_TEAMS, ...(StorageService.getCustomTeams ? StorageService.getCustomTeams() : []), ...StorageService.getTeams()];
+    for (const tid of teamsToCreate) {
+      const team = allTeamsList.find((t: any) => t.id === tid);
+      if (user && team) {
+        const teamEvents = eventsToCreate.filter(e => e.teamId === tid);
+        const isRepeat = teamEvents.length > 1;
+        StorageService.addAnnouncement({
+          senderId: user.id,
+          senderName: user.name,
+          teamId: tid,
+          teamName: team.name,
+          title: `📅 New ${newEvent.type.charAt(0).toUpperCase() + newEvent.type.slice(1)}: ${newEvent.title}`,
+          content: isRepeat
+            ? `${newEvent.title} scheduled every ${newEvent.repeatDays.join(' & ')} (${teamEvents.length} sessions).${newEvent.location ? ` Location: ${newEvent.location}.` : ''}${newEvent.notes ? ` Note: ${newEvent.notes}` : ''}`
+            : `${newEvent.title} on ${teamEvents[0].date} at ${newEvent.time}.${newEvent.location ? ` Location: ${newEvent.location}.` : ''}${newEvent.notes ? ` Note: ${newEvent.notes}` : ''}`,
+        });
+      }
     }
 
     setScheduleSuccess(true);
@@ -318,6 +326,7 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
       setIsSearchingLocation(false);
       setNewEvent({
         teamId: user?.teamIds?.[0] || MOCK_TEAMS[0].id,
+        selectedTeamIds: [user?.teamIds?.[0] || MOCK_TEAMS[0].id] as string[],
         type: 'training', title: '', time: '6:00 PM', location: '', notes: '',
         repeat: false, repeatDays: [],
         repeatStartDate: toLocalDateStr(new Date(calendarYear, calendarMonth, selectedDate)),
@@ -452,10 +461,51 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
                 </button>
               </div>
 
-              <div className="flex-1 overflow-y-auto p-6 space-y-5">
+              <div className="flex-1 overflow-y-auto px-6 pt-4 pb-6 space-y-5">
+                {/* Team Selector — pill buttons */}
+                {(() => {
+                  const allTeams = [...MOCK_TEAMS, ...(StorageService.getCustomTeams ? StorageService.getCustomTeams() : []),
+                    ...StorageService.getTeams()]
+                    .filter((t: any, i: number, arr: any[]) => arr.findIndex((x: any) => x.id === t.id) === i)
+                    .filter((t: any) => user?.teamIds?.includes(t.id));
+                  if (allTeams.length <= 1) return null;
+                  return (
+                    <div className="space-y-2">
+                      <label className="text-[11px] font-black text-slate-900 uppercase italic tracking-[0.18em] px-1">Select Team</label>
+                      <div className="flex flex-wrap gap-2">
+                        {allTeams.map((team: any) => {
+                          const selected = newEvent.selectedTeamIds.includes(team.id);
+                          const teamColor = team.color || '#6366f1';
+                          return (
+                            <button
+                              key={team.id}
+                              type="button"
+                              onClick={() => setNewEvent(prev => {
+                                const ids = prev.selectedTeamIds;
+                                const newIds = selected
+                                  ? ids.filter(id => id !== team.id)
+                                  : [...ids, team.id];
+                                // Must have at least one team selected
+                                if (newIds.length === 0) return prev;
+                                return { ...prev, selectedTeamIds: newIds, teamId: newIds[0] };
+                              })}
+                              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest transition-all ${
+                                selected ? 'bg-primary text-white shadow-sm' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                              }`}
+                            >
+                              <span className="w-2 h-2 rounded-full shrink-0" style={{ background: selected ? '#fff' : teamColor }} />
+                              {team.name}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })()}
+
                 {/* Event Type */}
                 <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Event Type</label>
+                  <label className="text-[11px] font-black text-slate-900 uppercase italic tracking-[0.18em] px-1">Event Type</label>
                   <div className="grid grid-cols-4 gap-2">
                     {([
                       { value: 'training', label: 'Training', icon: Activity },
@@ -488,7 +538,7 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
 
                 {/* Title */}
                 <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Event Title</label>
+                  <label className="text-[11px] font-black text-slate-900 uppercase italic tracking-[0.18em] px-1">Event Title</label>
                   <Input
                     placeholder="e.g. Tactical Drill"
                     value={newEvent.title}
@@ -497,45 +547,20 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
                   />
                 </div>
 
-                {/* Time + Team */}
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Time</label>
-                    <Input
-                      placeholder="e.g. 6:00 PM"
-                      value={newEvent.time}
-                      onChange={(e) => setNewEvent(prev => ({ ...prev, time: e.target.value }))}
-                      className="h-12 bg-slate-50 border-none rounded-2xl px-4 text-xs font-bold"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Team</label>
-                    <select
-                      value={newEvent.teamId}
-                      onChange={(e) => setNewEvent(prev => ({ ...prev, teamId: e.target.value }))}
-                      className="w-full h-12 bg-slate-50 border-none rounded-2xl px-4 text-xs font-bold appearance-none cursor-pointer"
-                    >
-                      {[...MOCK_TEAMS, ...(StorageService.getCustomTeams ? StorageService.getCustomTeams() : [])]
-                        .filter((t: any, i: number, arr: any[]) => arr.findIndex((x: any) => x.id === t.id) === i)
-                        .filter((t: any) => {
-                          if (!user?.teamIds?.includes(t.id)) return false;
-                          // Only show teams where user is coach/manager/creator
-                          if (user?.role === 'coach' || user?.role === 'club') return true;
-                          const storedRole = localStorage.getItem(`gameday_role_${user?.id}_${t.id}`);
-                          if (storedRole === 'coach' || storedRole === 'manager') return true;
-                          if (t.createdBy === user?.id || t.coachId === user?.id) return true;
-                          return false;
-                        })
-                        .map((team: any) => (
-                          <option key={team.id} value={team.id}>{team.name}</option>
-                        ))}
-                    </select>
-                  </div>
+                {/* Time */}
+                <div className="space-y-2">
+                  <label className="text-[11px] font-black text-slate-900 uppercase italic tracking-[0.18em] px-1">Time</label>
+                  <Input
+                    placeholder="e.g. 6:00 PM"
+                    value={newEvent.time}
+                    onChange={(e) => setNewEvent(prev => ({ ...prev, time: e.target.value }))}
+                    className="h-12 bg-slate-50 border-none rounded-2xl px-4 text-xs font-bold"
+                  />
                 </div>
 
                 {/* Location — optional */}
                 <div className="space-y-3">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Location (Optional)</label>
+                  <label className="text-[11px] font-black text-slate-900 uppercase italic tracking-[0.18em] px-1">Location (Optional)</label>
 
                   {!newEvent.pinLocation && (
                     <div className="grid grid-cols-2 gap-3 mb-1">
@@ -740,7 +765,7 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
 
                 {/* Notes */}
                 <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest px-1">Notes (Optional)</label>
+                  <label className="text-[11px] font-black text-slate-900 uppercase italic tracking-[0.18em] px-1">Notes (Optional)</label>
                   <Input
                     placeholder="e.g. Wear home colors"
                     value={newEvent.notes}

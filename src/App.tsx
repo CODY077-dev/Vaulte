@@ -29,6 +29,8 @@ export default function App() {
   const [memberRoles, setMemberRoles] = useState<Record<string, 'coach' | 'manager' | null>>({});
   const [forceTeamsView, setForceTeamsView] = useState(false);
   const [viewUserId, setViewUserId] = useState<string | null>(null);
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [chatUnreadCount, setChatUnreadCount] = useState(0);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
@@ -78,7 +80,12 @@ export default function App() {
                     localIds.push(teamId);
                   }
                 }
-                return [...new Set([...firestoreIds, ...localIds])];
+                // Also merge from existing localStorage user data (catches joins that didn't reach Firestore)
+                const existingLocal = JSON.parse(localStorage.getItem('gameday_user') || '{}');
+                const existingProfile = JSON.parse(localStorage.getItem(`gameday_user_${firebaseUser.uid}`) || '{}');
+                const localUserIds: string[] = existingLocal?.teamIds || [];
+                const localProfileIds: string[] = existingProfile?.teamIds || [];
+                return [...new Set([...firestoreIds, ...localIds, ...localUserIds, ...localProfileIds])];
               })(),
               clubId: data.clubId || undefined,
             };
@@ -89,15 +96,24 @@ export default function App() {
             StorageService.updateUserData(appUser.id, appUser);
 
             // Hydrate user from Firestore on load (Fix 3)
+            // Merge teamIds from both sources — never lose local joins
             try {
-              const { db } = await import('./firebase');
-              const { doc, getDoc } = await import('firebase/firestore');
-              const snap = await getDoc(doc(db, 'users', firebaseUser.uid));
+              const { db: fireDb } = await import('./firebase');
+              const { doc: fireDoc, getDoc: fireGetDoc, setDoc: fireSetDoc } = await import('firebase/firestore');
+              const snap = await fireGetDoc(fireDoc(fireDb, 'users', firebaseUser.uid));
               if (snap.exists()) {
                 const firestoreData = snap.data();
-                const merged = { ...appUser, ...firestoreData };
+                const mergedTeamIds = [...new Set([
+                  ...(appUser.teamIds || []),
+                  ...(firestoreData.teamIds || [])
+                ])];
+                const merged = { ...appUser, ...firestoreData, teamIds: mergedTeamIds };
                 setUser(merged);
                 localStorage.setItem('gameday_user', JSON.stringify(merged));
+                // Sync merged teamIds back to Firestore if local had extras
+                if (mergedTeamIds.length > (firestoreData.teamIds || []).length) {
+                  await fireSetDoc(fireDoc(fireDb, 'users', firebaseUser.uid), { teamIds: mergedTeamIds }, { merge: true });
+                }
               }
             } catch (e) {
               console.warn('Firestore user hydration failed:', e);
@@ -322,6 +338,8 @@ export default function App() {
   const handleTabChange = (tab: string, viewId?: string) => {
     setActiveTab(tab);
     setViewUserId(viewId || null);
+    window.scrollTo(0, 0);
+    if (tab !== 'chat') setIsChatOpen(false);
     // If navigating to teams from club and we have a target team, allow the detour
     if (tab === 'teams' && localStorage.getItem('gameday_navigate_team')) {
       setForceTeamsView(true);
@@ -342,7 +360,7 @@ export default function App() {
         }
         return <Teams user={user} memberRoles={memberRoles} setMemberRoles={setMemberRoles} onTabChange={handleTabChange} onUpdateUser={handleUpdateUser} />;
       case "chat":
-        return user ? <Chat user={user} memberRoles={memberRoles} /> : null;
+        return user ? <Chat user={user} memberRoles={memberRoles} onChatOpen={setIsChatOpen} onUnreadCount={setChatUnreadCount} /> : null;
       case "schedule":
         return <Schedule user={user} onTabChange={handleTabChange} />;
       case "games":
@@ -399,7 +417,7 @@ export default function App() {
           </motion.div>
         </AnimatePresence>
         
-        <Navigation activeTab={activeTab} onTabChange={handleTabChange} user={user} />
+        {!isChatOpen && <Navigation activeTab={activeTab} onTabChange={handleTabChange} user={user} chatUnreadCount={chatUnreadCount} />}
       </main>
     </div>
   );

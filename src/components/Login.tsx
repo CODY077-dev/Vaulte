@@ -174,10 +174,10 @@ export default function Login({ onLogin }: LoginProps) {
             <Mail className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
             <Input
               type="email"
-              placeholder="EMAIL ADDRESS"
+              placeholder="Email address"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="pl-12 h-14 bg-white rounded-2xl border-slate-100 font-bold text-base placeholder:text-slate-300 uppercase tracking-widest focus:ring-primary/10"
+              className="pl-12 h-14 bg-white rounded-2xl border-slate-100 font-medium text-base placeholder:text-slate-300 tracking-wide focus:ring-primary/10"
               required
             />
           </div>
@@ -186,10 +186,10 @@ export default function Login({ onLogin }: LoginProps) {
             <Lock className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
             <Input
               type="password"
-              placeholder="PASSWORD"
+              placeholder="Password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="pl-12 h-14 bg-white rounded-2xl border-slate-100 font-bold text-base placeholder:text-slate-300 uppercase tracking-widest focus:ring-primary/10"
+              className="pl-12 h-14 bg-white rounded-2xl border-slate-100 font-medium text-base placeholder:text-slate-300 tracking-wide focus:ring-primary/10"
               required
             />
           </div>
@@ -207,19 +207,19 @@ export default function Login({ onLogin }: LoginProps) {
           <Button
             type="submit"
             disabled={loading}
-            className="w-full h-14 rounded-2xl bg-primary text-white font-black uppercase tracking-[0.2em] text-[11px] shadow-xl shadow-primary/20 hover:opacity-90 active:scale-[0.98] transition-all"
+            className="w-full h-14 rounded-2xl bg-primary text-white font-bold tracking-wide text-sm shadow-xl shadow-primary/20 hover:opacity-90 active:scale-[0.98] transition-all"
           >
             {loading ? (
               <span className="flex items-center gap-2">
                 <div className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                PROCESSING...
+                Processing...
               </span>
             ) : (
               <span className="flex items-center gap-2">
                 {mode === "signin" ? (
-                  <>SIGN IN <LogIn className="w-4 h-4" /></>
+                  <>Sign In <LogIn className="w-4 h-4" /></>
                 ) : (
-                  <>CREATE ACCOUNT <ArrowRight className="w-4 h-4" /></>
+                  <>Create Account <ArrowRight className="w-4 h-4" /></>
                 )}
               </span>
             )}
@@ -231,7 +231,7 @@ export default function Login({ onLogin }: LoginProps) {
               setMode(mode === "signin" ? "register" : "signin");
               setError(null);
             }}
-            className="w-full py-2 text-[10px] font-black text-slate-400 uppercase tracking-widest hover:text-slate-600 transition-colors"
+            className="w-full py-2 text-[11px] font-semibold text-slate-400 tracking-wide hover:text-slate-600 transition-colors"
           >
             {mode === "signin" ? "No account? Create one here" : "Already have an account? Sign in"}
           </button>

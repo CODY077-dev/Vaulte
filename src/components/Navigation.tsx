@@ -7,9 +7,10 @@ interface NavigationProps {
   activeTab: string;
   onTabChange: (tab: string) => void;
   user: UserType | null;
+  chatUnreadCount?: number;
 }
 
-export default function Navigation({ activeTab, onTabChange, user }: NavigationProps) {
+export default function Navigation({ activeTab, onTabChange, user, chatUnreadCount = 0 }: NavigationProps) {
   const allTabs = [
     { id: "home",     label: "Home",     icon: Home,         roles: ["supporter", "coach", "player", "manager", "club"] },
     { id: "teams",    label: "Teams",    icon: Users,        roles: ["coach", "player", "manager", "club"] },
@@ -37,16 +38,23 @@ export default function Navigation({ activeTab, onTabChange, user }: NavigationP
                   : "hover:bg-white/5 active:bg-white/10"
               )}
             >
-              <Icon
-                className={cn(
-                  "w-5 h-5 transition-all duration-200",
-                  isActive ? "text-white" : "text-white/40"
+              <div className="relative">
+                <Icon
+                  className={cn(
+                    "w-5 h-5 transition-all duration-200",
+                    isActive ? "text-white" : "text-slate-400"
+                  )}
+                />
+                {tab.id === 'chat' && chatUnreadCount > 0 && !isActive && (
+                  <span className="absolute -top-1.5 -right-2 min-w-[16px] h-[16px] px-1 rounded-full bg-red-500 text-white text-[8px] font-black flex items-center justify-center border-2 border-primary">
+                    {chatUnreadCount > 99 ? '99+' : chatUnreadCount}
+                  </span>
                 )}
-              />
+              </div>
               <span
                 className={cn(
                   "text-[8px] font-black uppercase tracking-wider leading-none transition-all duration-200",
-                  isActive ? "text-white" : "text-white/40"
+                  isActive ? "text-white" : "text-slate-400"
                 )}
               >
                 {tab.label}

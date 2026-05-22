@@ -459,7 +459,18 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
       const legacyStored = StorageService.getTeams();
       const combinedCustom = [...stored, ...legacyStored];
       
-      const currentUserData = user ? StorageService.getUserData(user.id) || user : null;
+      // Read fresh from both gameday_user and gameday_user_{id} to catch newly joined teams
+      const freshActiveUser = JSON.parse(localStorage.getItem('gameday_user') || '{}');
+      const storedUserData = user ? StorageService.getUserData(user.id) : null;
+      const currentUserData = {
+        ...user,
+        ...storedUserData,
+        teamIds: [...new Set([
+          ...(user?.teamIds || []),
+          ...(freshActiveUser?.teamIds || []),
+          ...(storedUserData?.teamIds || [])
+        ])]
+      };
       const userJoinedTeams = combinedCustom.filter(t => {
         const inTeamIds = currentUserData?.teamIds?.includes(t.id);
         if (!inTeamIds) return false;
@@ -573,10 +584,12 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
     window.dispatchEvent(new Event('gameday_update'));
   };
 
+  const freshUser = JSON.parse(localStorage.getItem('gameday_user') || '{}');
   const currentUser = user ? StorageService.getUserData(user.id) || user : null;
+  const allTeamIds = [...new Set([...(user?.teamIds || []), ...(freshUser?.teamIds || []), ...(currentUser?.teamIds || [])])];
   const userRole = user?.role;
   const allTeams = [
-    ...MOCK_TEAMS.filter(t => currentUser?.teamIds?.includes(t.id)),
+    ...MOCK_TEAMS.filter(t => allTeamIds.includes(t.id)),
     ...customTeams
   ];
   const userTeams = allTeams;
@@ -3398,12 +3411,12 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                       <ChevronLeft className="w-4 h-4" />
                     </button>
                   )}
-                  <div className="w-8 h-8 bg-primary/20 rounded-xl 
+                  <div className="w-8 h-8 bg-white/20 rounded-xl
                                  flex items-center justify-center">
-                    <LogIn className="w-4 h-4 text-primary" />
+                    <LogIn className="w-4 h-4 text-white" />
                   </div>
                   <div>
-                    <h3 className="text-base font-black uppercase italic 
+                    <h3 className="text-base font-black uppercase italic
                                   text-white leading-none">Join a Team</h3>
                     <p className="text-[9px] font-bold text-slate-400 
                                  uppercase tracking-widest mt-1">

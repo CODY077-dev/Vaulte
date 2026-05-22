@@ -38,9 +38,11 @@ const CHANNELS = [
 interface ChatProps {
   user: User;
   memberRoles: Record<string, 'coach' | 'manager' | null>;
+  onChatOpen?: (isOpen: boolean) => void;
+  onUnreadCount?: (count: number) => void;
 }
 
-export default function Chat({ user, memberRoles }: ChatProps) {
+export default function Chat({ user, memberRoles, onChatOpen, onUnreadCount }: ChatProps) {
   const [selectedTeamId, setSelectedTeamId] = useState<string | null>(
     user.role === 'supporter' && user.linkedTeamId ? user.linkedTeamId : null
   );
@@ -64,7 +66,8 @@ export default function Chat({ user, memberRoles }: ChatProps) {
   const [showMembers, setShowMembers] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const [lastMessages, setLastMessages] = useState<Record<string, { userName: string; text: string }>>({});
+  const [lastMessages, setLastMessages] = useState<Record<string, { userName: string; text: string; timestamp: number }>>({});
+  const [unreadSinceLast, setUnreadSinceLast] = useState<Record<string, number>>({});
 
   // ── Create chat / manage members state ──────────────────────
   const [showCreateChat, setShowCreateChat] = useState(false);
@@ -83,6 +86,17 @@ export default function Chat({ user, memberRoles }: ChatProps) {
   const [addMemberSelectedChats, setAddMemberSelectedChats] = useState<string[]>([]);
   const [addMemberSearch, setAddMemberSearch] = useState('');
   const [isAddingMembers, setIsAddingMembers] = useState(false);
+
+  // Notify parent when chat is open/closed
+  useEffect(() => {
+    onChatOpen?.(!!selectedTeamId);
+  }, [selectedTeamId, onChatOpen]);
+
+  // Report total unread count to parent for nav badge
+  useEffect(() => {
+    const total = Object.values(unreadSinceLast).reduce((sum, n) => sum + n, 0);
+    onUnreadCount?.(total);
+  }, [unreadSinceLast, onUnreadCount]);
 
   // ── Firestore real-time listener ──────────────────────────
   useEffect(() => {
@@ -386,39 +400,54 @@ export default function Chat({ user, memberRoles }: ChatProps) {
     if (chatTeams.length === 0) return;
     const unsubscribes: (() => void)[] = [];
 
-    chatTeams.forEach(team => {
-      CHANNELS.forEach(channel => {
-        const roomId = `${team.id}_${channel.id}`;
-        const messagesRef = collection(db, 'chatRooms', roomId, 'messages');
-        const q = query(messagesRef, orderBy('createdAt', 'desc'), limit(1));
-        const unsub = onSnapshot(q, (snap) => {
-          if (!snap.empty) {
-            const data = snap.docs[0].data();
-            setLastMessages(prev => ({
-              ...prev,
-              [roomId]: { userName: data.userName || 'Unknown', text: data.text || '' }
-            }));
-          }
-        }, () => {});
-        unsubscribes.push(unsub);
-      });
-    });
-
-    // Also listen for custom chat last messages
-    customChats.forEach(chat => {
-      const roomId = `${chat.teamId}_custom_${chat.id}`;
+    // Helper to listen for last message + count unreads since last visit
+    const listenRoom = (roomId: string) => {
       const messagesRef = collection(db, 'chatRooms', roomId, 'messages');
-      const q = query(messagesRef, orderBy('createdAt', 'desc'), limit(1));
-      const unsub = onSnapshot(q, (snap) => {
+
+      // Last message preview
+      const q1 = query(messagesRef, orderBy('createdAt', 'desc'), limit(1));
+      const unsub1 = onSnapshot(q1, (snap) => {
         if (!snap.empty) {
           const data = snap.docs[0].data();
+          const ts = data.createdAt ? (data.createdAt as Timestamp).toMillis() : 0;
           setLastMessages(prev => ({
             ...prev,
-            [roomId]: { userName: data.userName || 'Unknown', text: data.text || '' }
+            [roomId]: { userName: data.userName || 'Unknown', text: data.text || '', timestamp: ts }
           }));
         }
       }, () => {});
-      unsubscribes.push(unsub);
+      unsubscribes.push(unsub1);
+
+      // Unread count since last visit
+      const lastVisited = localStorage.getItem(`gameday_chat_last_visited_${user.id}_${roomId}`);
+      if (lastVisited) {
+        const lastVisitedDate = new Date(lastVisited);
+        const q2 = query(messagesRef, where('createdAt', '>', Timestamp.fromDate(lastVisitedDate)), orderBy('createdAt', 'desc'));
+        const unsub2 = onSnapshot(q2, (snap) => {
+          // Don't count the user's own messages
+          const unreadCount = snap.docs.filter(d => d.data().userId !== user.id).length;
+          setUnreadSinceLast(prev => ({ ...prev, [roomId]: unreadCount }));
+        }, () => {});
+        unsubscribes.push(unsub2);
+      } else {
+        // Never visited — count all messages (excluding own)
+        const q2 = query(messagesRef, orderBy('createdAt', 'desc'));
+        const unsub2 = onSnapshot(q2, (snap) => {
+          const unreadCount = snap.docs.filter(d => d.data().userId !== user.id).length;
+          setUnreadSinceLast(prev => ({ ...prev, [roomId]: unreadCount }));
+        }, () => {});
+        unsubscribes.push(unsub2);
+      }
+    };
+
+    chatTeams.forEach(team => {
+      CHANNELS.forEach(channel => {
+        listenRoom(`${team.id}_${channel.id}`);
+      });
+    });
+
+    customChats.forEach(chat => {
+      listenRoom(`${chat.teamId}_custom_${chat.id}`);
     });
 
     return () => unsubscribes.forEach(u => u());
@@ -506,7 +535,7 @@ export default function Chat({ user, memberRoles }: ChatProps) {
   };
 
   const chatChannels = useMemo(() => {
-    const rows: { team: any; channel: typeof CHANNELS[0]; teamName: string; unread: number }[] = [];
+    const rows: { team: any; channel: typeof CHANNELS[0]; teamName: string; unread: number; isCustom?: boolean; customChat?: any }[] = [];
     chatTeams.forEach(team => {
       const name = teamNames[team.id] || team.name;
       CHANNELS.forEach(channel => {
@@ -514,8 +543,27 @@ export default function Chat({ user, memberRoles }: ChatProps) {
         rows.push({ team, channel, teamName: name, unread: totalUnread });
       });
     });
+    // Add custom chats into the same list
+    customChats.forEach((chat: any) => {
+      rows.push({
+        team: { id: chat.teamId, name: chat.teamName, logo: null },
+        channel: { id: `custom_${chat.id}`, name: chat.name, label: chat.name.toLowerCase() },
+        teamName: chat.name,
+        unread: 0,
+        isCustom: true,
+        customChat: chat,
+      });
+    });
+    // Sort by most recent message activity (newest first)
+    rows.sort((a, b) => {
+      const roomA = a.isCustom ? `${a.team.id}_custom_${a.customChat.id}` : `${a.team.id}_${a.channel.id}`;
+      const roomB = b.isCustom ? `${b.team.id}_custom_${b.customChat.id}` : `${b.team.id}_${b.channel.id}`;
+      const tsA = lastMessages[roomA]?.timestamp || 0;
+      const tsB = lastMessages[roomB]?.timestamp || 0;
+      return tsB - tsA;
+    });
     return rows;
-  }, [chatTeams, teamNames, unreadCounts, channelUnreads]);
+  }, [chatTeams, teamNames, unreadCounts, channelUnreads, customChats, lastMessages]);
 
   // ── Channel list view ─────────────────────────────────────
   if (!selectedTeamId) {
@@ -538,103 +586,93 @@ export default function Chat({ user, memberRoles }: ChatProps) {
         </div>
 
         <div className="divide-y divide-slate-100">
-          {chatChannels.map(({ team, channel, teamName, unread }, index) => (
-            <motion.button
-              key={`${team.id}-${channel.id}`}
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              transition={{ delay: index * 0.03 }}
-              onClick={() => {
-                setSelectedTeamId(team.id);
-                setSelectedChannel(channel);
-                setChannelUnreads(prev => ({ ...prev, [channel.id]: 0 }));
-                setUnreadCounts(prev => ({ ...prev, [team.id]: 0 }));
-              }}
-              className="w-full flex items-center gap-3 px-5 py-4 hover:bg-slate-50 active:bg-slate-100 transition-colors text-left"
-            >
-              {/* Avatar */}
-              <div className="relative shrink-0">
-                <div className={`w-12 h-12 rounded-full flex items-center justify-center overflow-hidden ${
-                  (!logoErrors[team.id] && (teamLogos[team.id] || team.logo)) ? 'bg-white border border-slate-100' : getTeamColor(team.id)
-                }`}>
-                  {(!logoErrors[team.id] && (teamLogos[team.id] || team.logo)) ? (
-                    <img
-                      src={teamLogos[team.id] || team.logo}
-                      alt={teamName}
-                      className="w-full h-full object-contain p-1"
-                      onError={() => setLogoErrors(prev => ({ ...prev, [team.id]: true }))}
-                    />
+          {chatChannels.map(({ team, channel, teamName, unread, isCustom, customChat }, index) => {
+            const roomId = isCustom ? `${team.id}_custom_${customChat.id}` : `${team.id}_${channel.id}`;
+            const unreadCount = unreadSinceLast[roomId] || 0;
+            const lastMsg = lastMessages[roomId];
+            const displayName = isCustom ? customChat.name : teamName;
+            const memberCount = isCustom ? (customChat.memberIds?.length || 0) : getMemberCount(team.id, channel);
+
+            return (
+              <motion.button
+                key={roomId}
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ delay: index * 0.03 }}
+                onClick={() => {
+                  localStorage.setItem(`gameday_chat_last_visited_${user.id}_${roomId}`, new Date().toISOString());
+                  setUnreadSinceLast(prev => ({ ...prev, [roomId]: 0 }));
+                  setSelectedTeamId(team.id);
+                  if (isCustom) {
+                    setSelectedChannel({ id: `custom_${customChat.id}`, name: customChat.name, label: customChat.name.toLowerCase() });
+                  } else {
+                    setSelectedChannel(channel);
+                    setChannelUnreads(prev => ({ ...prev, [channel.id]: 0 }));
+                    setUnreadCounts(prev => ({ ...prev, [team.id]: 0 }));
+                  }
+                }}
+                className="w-full flex items-center gap-3 px-5 py-4 hover:bg-slate-50 active:bg-slate-100 transition-colors text-left"
+              >
+                {/* Avatar */}
+                <div className="relative shrink-0">
+                  {isCustom ? (
+                    <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center">
+                      <MessageSquare className="w-5 h-5 text-primary" />
+                    </div>
                   ) : (
-                    <span className="text-white text-sm font-black">{getTeamInitials(teamName)}</span>
+                    <div className={`w-12 h-12 rounded-full flex items-center justify-center overflow-hidden ${
+                      (!logoErrors[team.id] && (teamLogos[team.id] || team.logo)) ? 'bg-white border border-slate-100' : getTeamColor(team.id)
+                    }`}>
+                      {(!logoErrors[team.id] && (teamLogos[team.id] || team.logo)) ? (
+                        <img
+                          src={teamLogos[team.id] || team.logo}
+                          alt={teamName}
+                          className="w-full h-full object-contain p-1"
+                          onError={() => setLogoErrors(prev => ({ ...prev, [team.id]: true }))}
+                        />
+                      ) : (
+                        <span className="text-white text-sm font-black">{getTeamInitials(teamName)}</span>
+                      )}
+                    </div>
+                  )}
+                  {unread > 0 && (
+                    <div className="absolute -top-1 -right-1 bg-red-500 text-white text-[9px] font-black w-5 h-5 rounded-full flex items-center justify-center border-2 border-white z-10">
+                      {unread}
+                    </div>
                   )}
                 </div>
-                {unread > 0 && (
-                  <div className="absolute -top-1 -right-1 bg-red-500 text-white text-[9px] font-black w-5 h-5 rounded-full flex items-center justify-center border-2 border-white z-10">
-                    {unread}
-                  </div>
-                )}
-              </div>
 
-              {/* Content */}
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2">
-                  <h3 className={`text-sm font-black uppercase tracking-tight truncate ${unread > 0 ? 'text-slate-900' : 'text-slate-700'}`}>
-                    {teamName}
-                  </h3>
-                  <span className="text-[10px] font-bold text-slate-400 shrink-0">
-                    # {channel.label}
-                  </span>
+                {/* Content */}
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    <h3 className={`text-sm font-black uppercase tracking-tight truncate ${unread > 0 ? 'text-slate-900' : 'text-slate-700'}`}>
+                      {displayName}
+                    </h3>
+                    {!isCustom && (
+                      <span className="text-[10px] font-bold text-slate-400 shrink-0">
+                        # {channel.label}
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-slate-400 truncate mt-0.5">
+                    {lastMsg
+                      ? `${lastMsg.userName}: ${lastMsg.text}`
+                      : isCustom ? customChat.teamName : 'No messages yet'}
+                  </p>
                 </div>
-                <p className="text-[11px] text-slate-400 truncate mt-0.5">
-                  {lastMessages[`${team.id}_${channel.id}`]
-                    ? `${lastMessages[`${team.id}_${channel.id}`].userName}: ${lastMessages[`${team.id}_${channel.id}`].text}`
-                    : 'No messages yet'}
-                </p>
-              </div>
 
-              {/* Right side */}
-              <div className="flex flex-col items-end gap-1 shrink-0">
-                <span className="text-[10px] font-bold text-slate-300 uppercase">{getMemberCount(team.id, channel)} ppl</span>
-              </div>
-            </motion.button>
-          ))}
-
-          {/* Custom Chats */}
-          {customChats.length > 0 && (
-            <>
-              <div className="px-6 pt-4 pb-2">
-                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em]">Custom Chats</p>
-              </div>
-              {customChats.map((chat: any, index: number) => (
-                <motion.button
-                  key={chat.id}
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  transition={{ delay: index * 0.03 }}
-                  onClick={() => {
-                    setSelectedTeamId(chat.teamId);
-                    setSelectedChannel({ id: `custom_${chat.id}`, name: chat.name, label: chat.name.toLowerCase() });
-                  }}
-                  className="w-full flex items-center gap-3 px-5 py-4 hover:bg-slate-50 active:bg-slate-100 transition-colors text-left border-t border-slate-100"
-                >
-                  <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center">
-                    <MessageSquare className="w-5 h-5 text-primary" />
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <h3 className="text-sm font-black uppercase tracking-tight truncate text-slate-700">{chat.name}</h3>
-                    <p className="text-[11px] text-slate-400 truncate mt-0.5">
-                      {lastMessages[`${chat.teamId}_custom_${chat.id}`]
-                        ? `${lastMessages[`${chat.teamId}_custom_${chat.id}`].userName}: ${lastMessages[`${chat.teamId}_custom_${chat.id}`].text}`
-                        : chat.teamName}
-                    </p>
-                  </div>
-                  <div className="flex flex-col items-end gap-1 shrink-0">
-                    <span className="text-[10px] font-bold text-slate-300 uppercase">{chat.memberIds?.length || 0} ppl</span>
-                  </div>
-                </motion.button>
-              ))}
-            </>
-          )}
+                {/* Right side */}
+                <div className="flex flex-col items-end gap-1 shrink-0">
+                  <span className="text-[10px] font-bold text-slate-300 uppercase">{memberCount} ppl</span>
+                  {unreadCount > 0 && (
+                    <span className="text-[9px] font-black text-primary bg-primary/10 px-1.5 py-0.5 rounded-full">
+                      {unreadCount} new
+                    </span>
+                  )}
+                </div>
+              </motion.button>
+            );
+          })}
         </div>
 
         {/* Create Chat / Add Member Modal */}
@@ -1063,14 +1101,22 @@ export default function Chat({ user, memberRoles }: ChatProps) {
 
   // ── Chat view ─────────────────────────────────────────────
   return (
-    <div className="flex flex-col h-[calc(100vh-64px)] bg-slate-50">
-      <div className="bg-white border-b border-slate-100 p-4 flex items-center justify-between shadow-sm shrink-0 sticky top-0 z-20">
+    <div className="fixed inset-0 flex flex-col bg-slate-50 z-10">
+      <div className="bg-white border-b border-slate-100 p-4 flex items-center justify-between shadow-sm shrink-0">
         <div className="flex items-center gap-3">
           <Button
             variant="ghost"
             size="icon"
             className="text-slate-400 -ml-2"
-            onClick={() => setSelectedTeamId(null)}
+            onClick={() => {
+              // Save last visited timestamp when leaving
+              if (selectedTeamId) {
+                const roomId = `${selectedTeamId}_${selectedChannel.id}`;
+                localStorage.setItem(`gameday_chat_last_visited_${user.id}_${roomId}`, new Date().toISOString());
+                setUnreadSinceLast(prev => ({ ...prev, [roomId]: 0 }));
+              }
+              setSelectedTeamId(null);
+            }}
           >
             <ChevronLeft className="w-6 h-6" />
           </Button>
@@ -1224,8 +1270,7 @@ export default function Chat({ user, memberRoles }: ChatProps) {
 
       {/* Input area */}
       <div
-        className="shrink-0 px-4 py-3 bg-white border-t border-slate-100 pb-safe"
-        style={{ paddingBottom: 'max(12px, env(safe-area-inset-bottom))' }}
+        className="shrink-0 px-3 py-2 bg-white border-t border-slate-100"
       >
         <AnimatePresence mode="wait">
           {isRecording ? (
@@ -1233,7 +1278,7 @@ export default function Chat({ user, memberRoles }: ChatProps) {
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 10 }}
-              className="flex items-center gap-4 bg-red-50 p-3 rounded-2xl border border-red-100"
+              className="flex items-center gap-3 bg-red-50 p-2 rounded-xl border border-red-100"
             >
               <div className="flex items-center gap-2 flex-1">
                 <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse" />
@@ -1272,28 +1317,23 @@ export default function Chat({ user, memberRoles }: ChatProps) {
                 variant="ghost"
                 size="icon"
                 onClick={startRecording}
-                className="w-12 h-12 rounded-xl text-slate-400 hover:text-primary hover:bg-primary/5 transition-all"
+                className="w-9 h-9 rounded-xl text-slate-400 hover:text-primary hover:bg-primary/5 transition-all shrink-0"
               >
-                <Mic className="w-5 h-5" />
+                <Mic className="w-4 h-4" />
               </Button>
               <Input
                 value={inputText}
                 onChange={(e) => setInputText(e.target.value)}
-                onFocus={() => {
-                  setTimeout(() => {
-                    window.scrollTo(0, document.body.scrollHeight);
-                  }, 300);
-                }}
                 placeholder="Type a message..."
-                className="flex-1 bg-slate-50 border-none rounded-xl focus-visible:ring-primary h-12 disabled:opacity-50"
+                className="flex-1 bg-slate-50 border-none rounded-xl focus-visible:ring-primary h-9 text-base disabled:opacity-50"
               />
               <Button
                 type="submit"
                 size="icon"
                 disabled={!inputText.trim() || isSending}
-                className="w-12 h-12 rounded-xl shadow-lg shadow-primary/20 disabled:opacity-50 disabled:shadow-none"
+                className="w-9 h-9 rounded-xl shadow-lg shadow-primary/20 disabled:opacity-50 disabled:shadow-none shrink-0"
               >
-                <Send className={`w-5 h-5 ${isSending ? "animate-pulse" : ""}`} />
+                <Send className={`w-4 h-4 ${isSending ? "animate-pulse" : ""}`} />
               </Button>
             </motion.form>
           )}
@@ -1339,9 +1379,13 @@ export default function Chat({ user, memberRoles }: ChatProps) {
                 {channelMembers.members.length === 0 && (
                   <p className="text-center text-xs text-slate-400 py-8">No members in this channel yet</p>
                 )}
-                {channelMembers.members.map((member: any) => (
+                {channelMembers.members.map((member: any) => {
+                  const memberData = StorageService.getUserData(member.id);
+                  const avatar = memberData?.avatar || member.avatar || null;
+                  return (
                   <div key={member.id} className="flex items-center gap-3 p-3 bg-white rounded-2xl border border-slate-50">
                     <DefaultAvatar
+                      src={avatar}
                       name={member.name}
                       size="md"
                       className="rounded-xl shrink-0"
@@ -1357,7 +1401,8 @@ export default function Chat({ user, memberRoles }: ChatProps) {
                       )}
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </motion.div>
           </>
