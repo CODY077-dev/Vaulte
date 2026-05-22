@@ -28,7 +28,9 @@ import {
   User as UserIcon,
   Mail,
   Phone,
-  Pencil
+  Pencil,
+  Trash2,
+  UserMinus
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { cn } from "../lib/utils";
@@ -55,6 +57,8 @@ export default function Profile({ user, onLogout, onBack, onUpdateUser, isViewin
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const [showEditModal, setShowEditModal] = useState(false);
   const [showChildModal, setShowChildModal] = useState(false);
+  const [showRemoveChildModal, setShowRemoveChildModal] = useState(false);
+  const [childrenList, setChildrenList] = useState<any[]>([]);
   const [childName, setChildName] = useState("");
   const [childAge, setChildAge] = useState("");
   const [joinCode, setJoinCode] = useState("");
@@ -120,22 +124,59 @@ export default function Profile({ user, onLogout, onBack, onUpdateUser, isViewin
   const handleLinkChild = async () => {
     if (!childName || !childAge) return;
 
+    // If a join code was entered, find the matching team
+    let matchedTeamId = '';
+    if (joinCode.trim()) {
+      const foundTeam = StorageService.findTeamByCode(joinCode.trim());
+      if (foundTeam) {
+        matchedTeamId = foundTeam.id;
+      }
+    }
+
     const child = {
       id: `child-${Date.now()}`,
       name: childName,
       age: parseInt(childAge),
       parentIds: [user.id],
-      teamIds: [],
+      parentNames: [user.name || 'Parent'],
+      teamIds: matchedTeamId ? [matchedTeamId] : [] as string[],
     };
 
     const existing = JSON.parse(localStorage.getItem('gameday_children') || '[]');
     existing.push(child);
     localStorage.setItem('gameday_children', JSON.stringify(existing));
-    
+
+    // If matched a team, also add the parent to that team as a parent role
+    if (matchedTeamId) {
+      StorageService.addTeamToUser(user.id, matchedTeamId);
+      const savedUser = JSON.parse(localStorage.getItem('gameday_user') || '{}');
+      savedUser.teamIds = [...new Set([...(savedUser.teamIds || []), matchedTeamId])];
+      localStorage.setItem('gameday_user', JSON.stringify(savedUser));
+      localStorage.setItem(`gameday_role_${user.id}_${matchedTeamId}`, 'parent');
+      localStorage.setItem(`gameday_child_${user.id}_${matchedTeamId}`, child.id);
+    }
+
     try {
+      // Sync child to Firestore children collection
+      StorageService.syncChildToFirestore(child).catch(console.error);
+
       await updateDoc(doc(db, 'users', user.id), {
         children: arrayUnion(child.id)
       });
+
+      // If matched a team, also persist parent's team membership to Firestore
+      if (matchedTeamId) {
+        const { getDoc, setDoc } = await import('firebase/firestore');
+        const userRef = doc(db, 'users', user.id);
+        const userSnap = await getDoc(userRef);
+        const existingData = userSnap.exists() ? userSnap.data() : {};
+        const updatedTeamIds = [...new Set([...(existingData.teamIds || []), matchedTeamId])];
+        await setDoc(userRef, {
+          ...existingData,
+          teamIds: updatedTeamIds,
+        }, { merge: true });
+        onUpdateUser({ teamIds: updatedTeamIds });
+      }
     } catch (e) {
       console.error("Error updating user children in Firestore:", e);
     }
@@ -782,6 +823,22 @@ export default function Profile({ user, onLogout, onBack, onUpdateUser, isViewin
                     onChange={handleFileChange} 
                   />
 
+                  {/* Remove a Child — only when user has linked children */}
+                  {JSON.parse(localStorage.getItem('gameday_children') || '[]').some((c: any) => c.parentIds?.includes(user.id)) && (
+                    <button
+                      onClick={() => {
+                        const all = JSON.parse(localStorage.getItem('gameday_children') || '[]');
+                        setChildrenList(all.filter((c: any) => c.parentIds?.includes(user.id)));
+                        setShowEditModal(false);
+                        setTimeout(() => setShowRemoveChildModal(true), 200);
+                      }}
+                      className="w-full h-10 rounded-2xl border border-red-200 bg-white text-red-400 text-[9px] font-black uppercase tracking-widest transition-all hover:bg-red-50 active:scale-[0.98] flex items-center justify-center gap-2"
+                    >
+                      <UserMinus className="w-3.5 h-3.5" />
+                      Remove a Child
+                    </button>
+                  )}
+
                   {/* Save button */}
                   <button
                     onClick={async () => {
@@ -922,6 +979,128 @@ export default function Profile({ user, onLogout, onBack, onUpdateUser, isViewin
                   >
                     Link Profile
                   </button>
+                </div>
+              </motion.div>
+            </>
+          )}
+        </AnimatePresence>
+
+        {/* Remove Child Modal */}
+        <AnimatePresence>
+          {showRemoveChildModal && (
+            <>
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={() => setShowRemoveChildModal(false)}
+                className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[60]"
+              />
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95, y: 20 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: 20 }}
+                transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+                className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2
+                           z-[70] w-[92%] max-w-sm bg-white rounded-[2rem] shadow-2xl
+                           overflow-hidden max-h-[85vh] flex flex-col"
+              >
+                {/* Header */}
+                <div className="bg-slate-900 p-6 flex items-center justify-between shrink-0">
+                  <div>
+                    <h3 className="text-base font-black uppercase italic text-white leading-none">Remove a Child</h3>
+                    <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-1">Select a child to remove</p>
+                  </div>
+                  <button
+                    onClick={() => setShowRemoveChildModal(false)}
+                    className="w-8 h-8 rounded-xl bg-white/5 hover:bg-white/15 flex items-center justify-center text-white/60 hover:text-white transition-all"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                {/* Children list */}
+                <div className="p-5 space-y-3 overflow-y-auto">
+                  {childrenList.map((child: any) => (
+                      <motion.div
+                        key={child.id}
+                        layout
+                        initial={{ opacity: 1, scale: 1 }}
+                        exit={{ opacity: 0, scale: 0.8, height: 0, marginBottom: 0 }}
+                        transition={{ duration: 0.25 }}
+                        className="flex items-center gap-3 p-4 bg-slate-50 rounded-2xl"
+                      >
+                        <DefaultAvatar name={child.name} size="md" className="rounded-xl border-2 border-white shadow-sm shrink-0" />
+                        <div className="flex-1 min-w-0">
+                          <h4 className="font-bold text-slate-900 text-sm truncate">{child.name}</h4>
+                          <p className="text-[10px] text-slate-400 font-bold">
+                            {child.age ? `Age ${child.age}` : ''}{child.teamIds?.length ? ` · ${child.teamIds.length} team${child.teamIds.length !== 1 ? 's' : ''}` : ''}
+                          </p>
+                        </div>
+                        <button
+                          onClick={async () => {
+                            if (!confirm(`Remove ${child.name} from your profile?`)) return;
+
+                            // Immediately remove from UI state
+                            setChildrenList(prev => prev.filter(c => c.id !== child.id));
+
+                            const children = JSON.parse(localStorage.getItem('gameday_children') || '[]');
+                            const idx = children.findIndex((c: any) => c.id === child.id);
+
+                            if (idx !== -1) {
+                              const c = children[idx];
+                              // Remove this parent from the child's parentIds/parentNames
+                              c.parentIds = (c.parentIds || []).filter((id: string) => id !== user.id);
+                              c.parentNames = (c.parentNames || []).filter((n: string) => n !== user.name);
+
+                              if (c.parentIds.length === 0) {
+                                // No parents left — remove the child entirely
+                                children.splice(idx, 1);
+                                // Clean up Firestore
+                                try {
+                                  const { deleteDoc } = await import('firebase/firestore');
+                                  await deleteDoc(doc(db, 'children', child.id));
+                                } catch (e) {
+                                  console.warn('Failed to delete child from Firestore:', e);
+                                }
+                              } else {
+                                // Other parents remain — just update
+                                children[idx] = c;
+                                StorageService.syncChildToFirestore(c).catch(console.error);
+                              }
+
+                              localStorage.setItem('gameday_children', JSON.stringify(children));
+
+                              // Remove child link keys for all teams
+                              (child.teamIds || []).forEach((tid: string) => {
+                                localStorage.removeItem(`gameday_child_${user.id}_${tid}`);
+                              });
+
+                              // Remove user from Firestore children array
+                              try {
+                                const { arrayRemove } = await import('firebase/firestore');
+                                await updateDoc(doc(db, 'users', user.id), {
+                                  children: arrayRemove(child.id)
+                                });
+                              } catch (e) {
+                                console.warn('Failed to update user children in Firestore:', e);
+                              }
+
+                              window.dispatchEvent(new Event('gameday_update'));
+
+                              // Close modal if no children left
+                              const remaining = children.filter((c: any) => c.parentIds?.includes(user.id));
+                              if (remaining.length === 0) {
+                                setShowRemoveChildModal(false);
+                              }
+                            }
+                          }}
+                          className="w-9 h-9 rounded-xl bg-red-50 border border-red-200 flex items-center justify-center text-red-400 hover:bg-red-100 active:scale-95 transition-all shrink-0"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </motion.div>
+                    ))}
                 </div>
               </motion.div>
             </>

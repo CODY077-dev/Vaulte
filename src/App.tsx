@@ -173,6 +173,11 @@ export default function App() {
               StorageService.hydrateAll(allTeamIds).catch(e =>
                 console.warn('Firestore hydration failed:', e)
               );
+
+              // Hydrate children from Firestore
+              StorageService.hydrateChildren(appUser.id).catch(e =>
+                console.warn('Children hydration failed:', e)
+              );
             }
           }
         } else {

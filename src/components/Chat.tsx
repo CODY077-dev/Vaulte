@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useMemo } from "react";
 import { Message, UserRole, Team, User } from "../types";
 import { Input } from "./ui/input";
 import { Button } from "./ui/button";
-import { Send, Hash, Users, ChevronLeft, MessageSquare, ChevronDown, Star, Mic, Square, Trash2, X } from "lucide-react";
+import { Send, Hash, Users, ChevronLeft, MessageSquare, ChevronDown, Star, Mic, Square, Trash2, X, Plus, Check, Search } from "lucide-react";
 import { ScrollArea } from "./ui/scroll-area";
 import DefaultAvatar from "./DefaultAvatar";
 import { Badge } from "./ui/badge";
@@ -22,6 +22,11 @@ import {
   limit,
   doc,
   setDoc,
+  getDocs,
+  where,
+  deleteDoc,
+  updateDoc,
+  arrayUnion,
 } from "firebase/firestore";
 
 const CHANNELS = [
@@ -59,6 +64,25 @@ export default function Chat({ user, memberRoles }: ChatProps) {
   const [showMembers, setShowMembers] = useState(false);
   const [isSending, setIsSending] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [lastMessages, setLastMessages] = useState<Record<string, { userName: string; text: string }>>({});
+
+  // ── Create chat / manage members state ──────────────────────
+  const [showCreateChat, setShowCreateChat] = useState(false);
+  const [chatModalMode, setChatModalMode] = useState<'choose' | 'create' | 'addMember'>('choose');
+  const [createStep, setCreateStep] = useState<'team' | 'name' | 'members'>('team');
+  const [createTeamId, setCreateTeamId] = useState<string | null>(null);
+  const [createChatName, setCreateChatName] = useState('');
+  const [createSelectedMembers, setCreateSelectedMembers] = useState<string[]>([]);
+  const [createMemberSearch, setCreateMemberSearch] = useState('');
+  const [customChats, setCustomChats] = useState<any[]>([]);
+  const [isCreatingChat, setIsCreatingChat] = useState(false);
+  // Add member flow state
+  const [addMemberStep, setAddMemberStep] = useState<'team' | 'members' | 'chats'>('team');
+  const [addMemberTeamId, setAddMemberTeamId] = useState<string | null>(null);
+  const [addMemberSelectedMembers, setAddMemberSelectedMembers] = useState<string[]>([]);
+  const [addMemberSelectedChats, setAddMemberSelectedChats] = useState<string[]>([]);
+  const [addMemberSearch, setAddMemberSearch] = useState('');
+  const [isAddingMembers, setIsAddingMembers] = useState(false);
 
   // ── Firestore real-time listener ──────────────────────────
   useEffect(() => {
@@ -330,9 +354,155 @@ export default function Chat({ user, memberRoles }: ChatProps) {
 
   const getMemberCount = (teamId: string, channel: typeof CHANNELS[0]) => {
     const members = StorageService.getTeamMembers(teamId);
-    if (channel.id === 'coaches') return members.filter(m => m.role === 'coach' || m.role === 'manager').length;
+    // Include coach/creator if not already in roster
+    const allTeams = [...MOCK_TEAMS, ...StorageService.getCustomTeams()];
+    const team = allTeams.find(t => t.id === teamId);
+    const coachId = team?.coachId || team?.createdBy;
+    const coachInRoster = coachId ? members.some((m: any) => m.id === coachId) : true;
+    const totalExtra = (!coachInRoster && coachId) ? 1 : 0;
+    if (channel.id === 'coaches') {
+      const coachCount = members.filter(m => m.role === 'coach' || m.role === 'manager').length;
+      return coachCount + totalExtra;
+    }
     if (channel.id === 'players') return members.filter(m => m.role !== 'coach' && m.role !== 'manager').length;
-    return members.length;
+    return members.length + totalExtra;
+  };
+
+  // ── Load custom chats from Firestore ──────────────────────
+  useEffect(() => {
+    if (!user?.id) return;
+    const q = query(collection(db, 'customChats'), where('memberIds', 'array-contains', user.id));
+    const unsub = onSnapshot(q, (snap) => {
+      const chats = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      setCustomChats(chats);
+    }, (err) => {
+      console.warn('[Chat] Custom chats listener error:', err);
+    });
+    return () => unsub();
+  }, [user?.id]);
+
+  // ── Load last messages for channel list preview ─────────────
+  useEffect(() => {
+    if (chatTeams.length === 0) return;
+    const unsubscribes: (() => void)[] = [];
+
+    chatTeams.forEach(team => {
+      CHANNELS.forEach(channel => {
+        const roomId = `${team.id}_${channel.id}`;
+        const messagesRef = collection(db, 'chatRooms', roomId, 'messages');
+        const q = query(messagesRef, orderBy('createdAt', 'desc'), limit(1));
+        const unsub = onSnapshot(q, (snap) => {
+          if (!snap.empty) {
+            const data = snap.docs[0].data();
+            setLastMessages(prev => ({
+              ...prev,
+              [roomId]: { userName: data.userName || 'Unknown', text: data.text || '' }
+            }));
+          }
+        }, () => {});
+        unsubscribes.push(unsub);
+      });
+    });
+
+    // Also listen for custom chat last messages
+    customChats.forEach(chat => {
+      const roomId = `${chat.teamId}_custom_${chat.id}`;
+      const messagesRef = collection(db, 'chatRooms', roomId, 'messages');
+      const q = query(messagesRef, orderBy('createdAt', 'desc'), limit(1));
+      const unsub = onSnapshot(q, (snap) => {
+        if (!snap.empty) {
+          const data = snap.docs[0].data();
+          setLastMessages(prev => ({
+            ...prev,
+            [roomId]: { userName: data.userName || 'Unknown', text: data.text || '' }
+          }));
+        }
+      }, () => {});
+      unsubscribes.push(unsub);
+    });
+
+    return () => unsubscribes.forEach(u => u());
+  }, [chatTeams, customChats]);
+
+  // ── Create custom chat ──────────────────────────────────────
+  const handleCreateChat = async () => {
+    if (!createTeamId || !createChatName.trim() || createSelectedMembers.length === 0) return;
+    setIsCreatingChat(true);
+    try {
+      const allTeams = [...MOCK_TEAMS, ...StorageService.getCustomTeams()];
+      const team = allTeams.find(t => t.id === createTeamId);
+      const members = StorageService.getTeamMembers(createTeamId);
+      const selectedMemberData = members.filter((m: any) => createSelectedMembers.includes(m.id));
+      // Always include the creator
+      const memberIds = [...new Set([user.id, ...createSelectedMembers])];
+      const memberNames = memberIds.map(id => {
+        if (id === user.id) return user.name;
+        const m = members.find((m: any) => m.id === id);
+        return m?.name || 'Unknown';
+      });
+
+      const chatDoc = {
+        name: createChatName.trim(),
+        teamId: createTeamId,
+        teamName: team?.name || 'Unknown Team',
+        createdBy: user.id,
+        createdByName: user.name,
+        memberIds,
+        memberNames,
+        createdAt: serverTimestamp(),
+        lastMessage: '',
+        lastMessageBy: '',
+        lastMessageAt: serverTimestamp(),
+      };
+
+      await addDoc(collection(db, 'customChats'), chatDoc);
+      resetChatModal();
+    } catch (err) {
+      console.error('[Chat] Failed to create chat:', err);
+    } finally {
+      setIsCreatingChat(false);
+    }
+  };
+
+  // ── Add members to existing chats ───────────────────────────
+  const handleAddMembersToChats = async () => {
+    if (addMemberSelectedMembers.length === 0 || addMemberSelectedChats.length === 0) return;
+    setIsAddingMembers(true);
+    try {
+      const members = StorageService.getTeamMembers(addMemberTeamId || '');
+      for (const chatId of addMemberSelectedChats) {
+        const chatRef = doc(db, 'customChats', chatId);
+        const newNames = addMemberSelectedMembers.map(id => {
+          const m = members.find((m: any) => m.id === id);
+          return m?.name || 'Unknown';
+        });
+        await updateDoc(chatRef, {
+          memberIds: arrayUnion(...addMemberSelectedMembers),
+          memberNames: arrayUnion(...newNames),
+        });
+      }
+      // Reset and close
+      resetChatModal();
+    } catch (err) {
+      console.error('[Chat] Failed to add members to chats:', err);
+    } finally {
+      setIsAddingMembers(false);
+    }
+  };
+
+  const resetChatModal = () => {
+    setShowCreateChat(false);
+    setChatModalMode('choose');
+    setCreateStep('team');
+    setCreateTeamId(null);
+    setCreateChatName('');
+    setCreateSelectedMembers([]);
+    setCreateMemberSearch('');
+    setAddMemberStep('team');
+    setAddMemberTeamId(null);
+    setAddMemberSelectedMembers([]);
+    setAddMemberSelectedChats([]);
+    setAddMemberSearch('');
   };
 
   const chatChannels = useMemo(() => {
@@ -351,9 +521,20 @@ export default function Chat({ user, memberRoles }: ChatProps) {
   if (!selectedTeamId) {
     return (
       <div className="bg-white min-h-screen pb-24">
-        <div className="pt-6 pb-2 px-6">
-          <h1 className="text-2xl font-black text-slate-900 tracking-tight uppercase italic">Messages</h1>
-          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] mt-1">Your Team Channels</p>
+        <div className="pt-6 pb-2 px-6 flex items-start justify-between">
+          <div>
+            <h1 className="text-2xl font-black text-slate-900 tracking-tight uppercase italic">Messages</h1>
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] mt-1">Your Team Channels</p>
+          </div>
+          <button
+            onClick={() => {
+              setShowCreateChat(true);
+              setChatModalMode('choose');
+            }}
+            className="w-8 h-8 rounded-full bg-white shadow-sm flex items-center justify-center active:scale-90 transition-all hover:bg-slate-50"
+          >
+            <Plus className="w-4 h-4 text-slate-400" />
+          </button>
         </div>
 
         <div className="divide-y divide-slate-100">
@@ -405,7 +586,9 @@ export default function Chat({ user, memberRoles }: ChatProps) {
                   </span>
                 </div>
                 <p className="text-[11px] text-slate-400 truncate mt-0.5">
-                  Tap to open chat
+                  {lastMessages[`${team.id}_${channel.id}`]
+                    ? `${lastMessages[`${team.id}_${channel.id}`].userName}: ${lastMessages[`${team.id}_${channel.id}`].text}`
+                    : 'No messages yet'}
                 </p>
               </div>
 
@@ -415,7 +598,465 @@ export default function Chat({ user, memberRoles }: ChatProps) {
               </div>
             </motion.button>
           ))}
+
+          {/* Custom Chats */}
+          {customChats.length > 0 && (
+            <>
+              <div className="px-6 pt-4 pb-2">
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em]">Custom Chats</p>
+              </div>
+              {customChats.map((chat: any, index: number) => (
+                <motion.button
+                  key={chat.id}
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  transition={{ delay: index * 0.03 }}
+                  onClick={() => {
+                    setSelectedTeamId(chat.teamId);
+                    setSelectedChannel({ id: `custom_${chat.id}`, name: chat.name, label: chat.name.toLowerCase() });
+                  }}
+                  className="w-full flex items-center gap-3 px-5 py-4 hover:bg-slate-50 active:bg-slate-100 transition-colors text-left border-t border-slate-100"
+                >
+                  <div className="w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center">
+                    <MessageSquare className="w-5 h-5 text-primary" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <h3 className="text-sm font-black uppercase tracking-tight truncate text-slate-700">{chat.name}</h3>
+                    <p className="text-[11px] text-slate-400 truncate mt-0.5">
+                      {lastMessages[`${chat.teamId}_custom_${chat.id}`]
+                        ? `${lastMessages[`${chat.teamId}_custom_${chat.id}`].userName}: ${lastMessages[`${chat.teamId}_custom_${chat.id}`].text}`
+                        : chat.teamName}
+                    </p>
+                  </div>
+                  <div className="flex flex-col items-end gap-1 shrink-0">
+                    <span className="text-[10px] font-bold text-slate-300 uppercase">{chat.memberIds?.length || 0} ppl</span>
+                  </div>
+                </motion.button>
+              ))}
+            </>
+          )}
         </div>
+
+        {/* Create Chat / Add Member Modal */}
+        <AnimatePresence>
+          {showCreateChat && (
+            <>
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="fixed inset-0 bg-black/50 z-[60]"
+                onClick={resetChatModal}
+              />
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95, y: 20 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: 20 }}
+                className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[70] w-[92%] max-w-sm max-h-[85vh] flex flex-col bg-white rounded-[2rem] shadow-2xl overflow-hidden"
+              >
+                {/* Header */}
+                <div className="bg-slate-900 p-6 flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    {/* Back button logic */}
+                    {chatModalMode === 'create' && (
+                      <button onClick={() => {
+                        if (createStep === 'members') setCreateStep('name');
+                        else if (createStep === 'name' && chatTeams.length > 1) { setCreateStep('team'); setCreateTeamId(null); }
+                        else if (createStep === 'name' && chatTeams.length === 1) { setChatModalMode('choose'); setCreateTeamId(null); setCreateChatName(''); }
+                        else if (createStep === 'team') setChatModalMode('choose');
+                      }} className="text-white/60 hover:text-white">
+                        <ChevronLeft className="w-5 h-5" />
+                      </button>
+                    )}
+                    {chatModalMode === 'addMember' && (
+                      <button onClick={() => {
+                        if (addMemberStep === 'chats') setAddMemberStep('members');
+                        else if (addMemberStep === 'members' && chatTeams.length > 1) { setAddMemberStep('team'); setAddMemberTeamId(null); }
+                        else if (addMemberStep === 'members' && chatTeams.length === 1) { setChatModalMode('choose'); setAddMemberTeamId(null); setAddMemberSelectedMembers([]); }
+                        else if (addMemberStep === 'team') setChatModalMode('choose');
+                      }} className="text-white/60 hover:text-white">
+                        <ChevronLeft className="w-5 h-5" />
+                      </button>
+                    )}
+                    <div>
+                      <h2 className="text-white font-black uppercase italic text-lg">
+                        {chatModalMode === 'choose' ? 'Chat Options' :
+                         chatModalMode === 'create' ? (createStep === 'team' ? 'Select Team' : createStep === 'name' ? 'Chat Name' : 'Add Members') :
+                         addMemberStep === 'team' ? 'Select Team' : addMemberStep === 'members' ? 'Select Members' : 'Select Chats'}
+                      </h2>
+                      {chatModalMode !== 'choose' && (
+                        <p className="text-white/50 text-[10px] font-bold uppercase tracking-widest">
+                          {chatModalMode === 'create'
+                            ? `Step ${createStep === 'team' ? '1 of 3' : createStep === 'name' ? (chatTeams.length === 1 ? '1 of 2' : '2 of 3') : (chatTeams.length === 1 ? '2 of 2' : '3 of 3')}`
+                            : `Step ${addMemberStep === 'team' ? '1 of 3' : addMemberStep === 'members' ? (chatTeams.length === 1 ? '1 of 2' : '2 of 3') : (chatTeams.length === 1 ? '2 of 2' : '3 of 3')}`
+                          }
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                  <button onClick={resetChatModal} className="text-white/60 hover:text-white">
+                    <X className="w-5 h-5" />
+                  </button>
+                </div>
+
+                {/* Body */}
+                <div className="flex-1 overflow-y-auto p-5 space-y-3">
+
+                  {/* ── Choose Mode ── */}
+                  {chatModalMode === 'choose' && (
+                    <>
+                      <button
+                        onClick={() => {
+                          setChatModalMode('create');
+                          if (chatTeams.length === 1) {
+                            setCreateTeamId(chatTeams[0].id);
+                            setCreateStep('name');
+                          } else {
+                            setCreateStep('team');
+                          }
+                        }}
+                        className="w-full flex items-center gap-4 p-4 bg-slate-50 rounded-2xl hover:bg-slate-100 transition-colors text-left"
+                      >
+                        <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
+                          <Plus className="w-5 h-5 text-primary" />
+                        </div>
+                        <div className="flex-1">
+                          <h4 className="font-bold text-slate-900 text-sm">Create a Chat</h4>
+                          <p className="text-[9px] text-slate-400 font-medium">Start a new group conversation</p>
+                        </div>
+                        <ChevronDown className="w-4 h-4 text-slate-300 -rotate-90" />
+                      </button>
+                      <button
+                        onClick={() => {
+                          setChatModalMode('addMember');
+                          if (chatTeams.length === 1) {
+                            setAddMemberTeamId(chatTeams[0].id);
+                            setAddMemberStep('members');
+                          } else {
+                            setAddMemberStep('team');
+                          }
+                        }}
+                        className="w-full flex items-center gap-4 p-4 bg-slate-50 rounded-2xl hover:bg-slate-100 transition-colors text-left"
+                      >
+                        <div className="w-10 h-10 rounded-full bg-emerald-500/10 flex items-center justify-center">
+                          <Users className="w-5 h-5 text-emerald-600" />
+                        </div>
+                        <div className="flex-1">
+                          <h4 className="font-bold text-slate-900 text-sm">Add Member to Chat</h4>
+                          <p className="text-[9px] text-slate-400 font-medium">Add people to existing chats</p>
+                        </div>
+                        <ChevronDown className="w-4 h-4 text-slate-300 -rotate-90" />
+                      </button>
+                    </>
+                  )}
+
+                  {/* ── Create Chat Flow ── */}
+                  {chatModalMode === 'create' && createStep === 'team' && (
+                    chatTeams.map(team => {
+                      const name = teamNames[team.id] || team.name;
+                      return (
+                        <button
+                          key={team.id}
+                          onClick={() => {
+                            setCreateTeamId(team.id);
+                            setCreateStep('name');
+                          }}
+                          className="w-full flex items-center gap-3 p-4 bg-slate-50 rounded-2xl hover:bg-slate-100 transition-colors text-left"
+                        >
+                          <div className={`w-10 h-10 rounded-full flex items-center justify-center overflow-hidden ${
+                            (!logoErrors[team.id] && (teamLogos[team.id] || team.logo)) ? 'bg-white border border-slate-100' : getTeamColor(team.id)
+                          }`}>
+                            {(!logoErrors[team.id] && (teamLogos[team.id] || team.logo)) ? (
+                              <img src={teamLogos[team.id] || team.logo} alt={name} className="w-full h-full object-contain p-1" onError={() => setLogoErrors(prev => ({ ...prev, [team.id]: true }))} />
+                            ) : (
+                              <span className="text-white text-xs font-black">{getTeamInitials(name)}</span>
+                            )}
+                          </div>
+                          <div className="flex-1">
+                            <h4 className="font-bold text-slate-900 text-sm">{name}</h4>
+                            <p className="text-[9px] text-slate-400 font-medium">{StorageService.getTeamMembers(team.id).length} members</p>
+                          </div>
+                          <ChevronDown className="w-4 h-4 text-slate-300 -rotate-90" />
+                        </button>
+                      );
+                    })
+                  )}
+
+                  {chatModalMode === 'create' && createStep === 'name' && (
+                    <div className="space-y-4">
+                      <div>
+                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 block">Chat Name</label>
+                        <Input
+                          value={createChatName}
+                          onChange={e => setCreateChatName(e.target.value)}
+                          placeholder="e.g. Forward Pack, Match Day Squad"
+                          className="h-12 rounded-xl text-sm"
+                          autoFocus
+                        />
+                      </div>
+                      <button
+                        onClick={() => {
+                          if (createChatName.trim()) setCreateStep('members');
+                        }}
+                        disabled={!createChatName.trim()}
+                        className="w-full h-12 bg-slate-900 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest disabled:opacity-40 hover:bg-slate-800 transition-all active:scale-[0.98]"
+                      >
+                        Next — Select Members
+                      </button>
+                    </div>
+                  )}
+
+                  {chatModalMode === 'create' && createStep === 'members' && createTeamId && (() => {
+                    const members = StorageService.getTeamMembers(createTeamId);
+                    // Also include the coach/creator
+                    const allTeams = [...MOCK_TEAMS, ...StorageService.getCustomTeams()];
+                    const team = allTeams.find(t => t.id === createTeamId);
+                    const coachId = team?.coachId || team?.createdBy;
+                    const coachInList = members.some((m: any) => m.id === coachId);
+                    let allMembers = members;
+                    if (coachId && !coachInList) {
+                      const coachData = StorageService.getUserData(coachId);
+                      allMembers = [{ id: coachId, name: coachData?.name || 'Coach', avatar: coachData?.avatar, role: 'Coach' }, ...members];
+                    }
+                    // Filter out current user (auto-included) and apply search
+                    const filteredMembers = allMembers
+                      .filter((m: any) => m.id !== user.id)
+                      .filter((m: any) => !createMemberSearch || m.name?.toLowerCase().includes(createMemberSearch.toLowerCase()));
+
+                    return (
+                      <div className="space-y-3">
+                        <div className="relative">
+                          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                          <Input
+                            value={createMemberSearch}
+                            onChange={e => setCreateMemberSearch(e.target.value)}
+                            placeholder="Search members..."
+                            className="h-10 pl-9 rounded-xl text-sm"
+                          />
+                        </div>
+                        <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">{createSelectedMembers.length} selected · You'll be added automatically</p>
+                        <div className="space-y-2 max-h-[40vh] overflow-y-auto">
+                          {filteredMembers.map((member: any) => {
+                            const isSelected = createSelectedMembers.includes(member.id);
+                            return (
+                              <button
+                                key={member.id}
+                                onClick={() => {
+                                  setCreateSelectedMembers(prev =>
+                                    isSelected ? prev.filter(id => id !== member.id) : [...prev, member.id]
+                                  );
+                                }}
+                                className={`w-full flex items-center gap-3 p-3 rounded-xl transition-all text-left ${
+                                  isSelected ? 'bg-primary/10 ring-1 ring-primary/30' : 'bg-slate-50 hover:bg-slate-100'
+                                }`}
+                              >
+                                <DefaultAvatar src={member.avatar} name={member.name} size="sm" className="rounded-full" />
+                                <div className="flex-1">
+                                  <h4 className="font-bold text-slate-900 text-sm">{member.name}</h4>
+                                  <p className="text-[9px] font-bold text-slate-400 uppercase">{member.role || 'Member'}</p>
+                                </div>
+                                <div className={`w-6 h-6 rounded-full flex items-center justify-center ${
+                                  isSelected ? 'bg-primary text-white' : 'bg-slate-200'
+                                }`}>
+                                  {isSelected && <Check className="w-3.5 h-3.5" />}
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <button
+                          onClick={handleCreateChat}
+                          disabled={createSelectedMembers.length === 0 || isCreatingChat}
+                          className="w-full h-12 bg-slate-900 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest disabled:opacity-40 hover:bg-slate-800 transition-all active:scale-[0.98]"
+                        >
+                          {isCreatingChat ? 'Creating...' : `Create Chat (${createSelectedMembers.length + 1} members)`}
+                        </button>
+                      </div>
+                    );
+                  })()}
+
+                  {/* ── Add Member Flow ── */}
+                  {chatModalMode === 'addMember' && addMemberStep === 'team' && (
+                    chatTeams.map(team => {
+                      const name = teamNames[team.id] || team.name;
+                      const teamCustomChats = customChats.filter((c: any) => c.teamId === team.id);
+                      if (teamCustomChats.length === 0) return (
+                        <div key={team.id} className="w-full flex items-center gap-3 p-4 bg-slate-50 rounded-2xl text-left opacity-50">
+                          <div className={`w-10 h-10 rounded-full flex items-center justify-center overflow-hidden ${
+                            (!logoErrors[team.id] && (teamLogos[team.id] || team.logo)) ? 'bg-white border border-slate-100' : getTeamColor(team.id)
+                          }`}>
+                            {(!logoErrors[team.id] && (teamLogos[team.id] || team.logo)) ? (
+                              <img src={teamLogos[team.id] || team.logo} alt={name} className="w-full h-full object-contain p-1" onError={() => setLogoErrors(prev => ({ ...prev, [team.id]: true }))} />
+                            ) : (
+                              <span className="text-white text-xs font-black">{getTeamInitials(name)}</span>
+                            )}
+                          </div>
+                          <div className="flex-1">
+                            <h4 className="font-bold text-slate-900 text-sm">{name}</h4>
+                            <p className="text-[9px] text-slate-400 font-medium">No custom chats</p>
+                          </div>
+                        </div>
+                      );
+                      return (
+                        <button
+                          key={team.id}
+                          onClick={() => {
+                            setAddMemberTeamId(team.id);
+                            setAddMemberStep('members');
+                          }}
+                          className="w-full flex items-center gap-3 p-4 bg-slate-50 rounded-2xl hover:bg-slate-100 transition-colors text-left"
+                        >
+                          <div className={`w-10 h-10 rounded-full flex items-center justify-center overflow-hidden ${
+                            (!logoErrors[team.id] && (teamLogos[team.id] || team.logo)) ? 'bg-white border border-slate-100' : getTeamColor(team.id)
+                          }`}>
+                            {(!logoErrors[team.id] && (teamLogos[team.id] || team.logo)) ? (
+                              <img src={teamLogos[team.id] || team.logo} alt={name} className="w-full h-full object-contain p-1" onError={() => setLogoErrors(prev => ({ ...prev, [team.id]: true }))} />
+                            ) : (
+                              <span className="text-white text-xs font-black">{getTeamInitials(name)}</span>
+                            )}
+                          </div>
+                          <div className="flex-1">
+                            <h4 className="font-bold text-slate-900 text-sm">{name}</h4>
+                            <p className="text-[9px] text-slate-400 font-medium">{teamCustomChats.length} custom chat{teamCustomChats.length !== 1 ? 's' : ''}</p>
+                          </div>
+                          <ChevronDown className="w-4 h-4 text-slate-300 -rotate-90" />
+                        </button>
+                      );
+                    })
+                  )}
+
+                  {chatModalMode === 'addMember' && addMemberStep === 'members' && addMemberTeamId && (() => {
+                    const members = StorageService.getTeamMembers(addMemberTeamId);
+                    const allTeams = [...MOCK_TEAMS, ...StorageService.getCustomTeams()];
+                    const team = allTeams.find(t => t.id === addMemberTeamId);
+                    const coachId = team?.coachId || team?.createdBy;
+                    const coachInList = members.some((m: any) => m.id === coachId);
+                    let allMembers = members;
+                    if (coachId && !coachInList) {
+                      const coachData = StorageService.getUserData(coachId);
+                      allMembers = [{ id: coachId, name: coachData?.name || 'Coach', avatar: coachData?.avatar, role: 'Coach' }, ...members];
+                    }
+                    const filteredMembers = allMembers
+                      .filter((m: any) => !addMemberSearch || m.name?.toLowerCase().includes(addMemberSearch.toLowerCase()));
+
+                    return (
+                      <div className="space-y-3">
+                        <div className="relative">
+                          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                          <Input
+                            value={addMemberSearch}
+                            onChange={e => setAddMemberSearch(e.target.value)}
+                            placeholder="Search members..."
+                            className="h-10 pl-9 rounded-xl text-sm"
+                          />
+                        </div>
+                        <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">{addMemberSelectedMembers.length} selected</p>
+                        <div className="space-y-2 max-h-[40vh] overflow-y-auto">
+                          {filteredMembers.map((member: any) => {
+                            const isSelected = addMemberSelectedMembers.includes(member.id);
+                            return (
+                              <button
+                                key={member.id}
+                                onClick={() => {
+                                  setAddMemberSelectedMembers(prev =>
+                                    isSelected ? prev.filter(id => id !== member.id) : [...prev, member.id]
+                                  );
+                                }}
+                                className={`w-full flex items-center gap-3 p-3 rounded-xl transition-all text-left ${
+                                  isSelected ? 'bg-emerald-500/10 ring-1 ring-emerald-500/30' : 'bg-slate-50 hover:bg-slate-100'
+                                }`}
+                              >
+                                <DefaultAvatar src={member.avatar} name={member.name} size="sm" className="rounded-full" />
+                                <div className="flex-1">
+                                  <h4 className="font-bold text-slate-900 text-sm">{member.name}</h4>
+                                  <p className="text-[9px] font-bold text-slate-400 uppercase">{member.role || 'Member'}</p>
+                                </div>
+                                <div className={`w-6 h-6 rounded-full flex items-center justify-center ${
+                                  isSelected ? 'bg-emerald-500 text-white' : 'bg-slate-200'
+                                }`}>
+                                  {isSelected && <Check className="w-3.5 h-3.5" />}
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <button
+                          onClick={() => {
+                            if (addMemberSelectedMembers.length > 0) setAddMemberStep('chats');
+                          }}
+                          disabled={addMemberSelectedMembers.length === 0}
+                          className="w-full h-12 bg-slate-900 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest disabled:opacity-40 hover:bg-slate-800 transition-all active:scale-[0.98]"
+                        >
+                          Next — Select Chats
+                        </button>
+                      </div>
+                    );
+                  })()}
+
+                  {chatModalMode === 'addMember' && addMemberStep === 'chats' && addMemberTeamId && (() => {
+                    const teamChats = customChats.filter((c: any) => c.teamId === addMemberTeamId);
+                    return (
+                      <div className="space-y-3">
+                        <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest">
+                          Adding {addMemberSelectedMembers.length} member{addMemberSelectedMembers.length !== 1 ? 's' : ''} · {addMemberSelectedChats.length} chat{addMemberSelectedChats.length !== 1 ? 's' : ''} selected
+                        </p>
+                        <div className="space-y-2 max-h-[40vh] overflow-y-auto">
+                          {teamChats.map((chat: any) => {
+                            const isSelected = addMemberSelectedChats.includes(chat.id);
+                            // Check which selected members are already in this chat
+                            const alreadyIn = addMemberSelectedMembers.filter(id => chat.memberIds?.includes(id));
+                            const newCount = addMemberSelectedMembers.length - alreadyIn.length;
+                            return (
+                              <button
+                                key={chat.id}
+                                onClick={() => {
+                                  setAddMemberSelectedChats(prev =>
+                                    isSelected ? prev.filter(id => id !== chat.id) : [...prev, chat.id]
+                                  );
+                                }}
+                                className={`w-full flex items-center gap-3 p-3 rounded-xl transition-all text-left ${
+                                  isSelected ? 'bg-emerald-500/10 ring-1 ring-emerald-500/30' : 'bg-slate-50 hover:bg-slate-100'
+                                }`}
+                              >
+                                <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
+                                  <MessageSquare className="w-4 h-4 text-primary" />
+                                </div>
+                                <div className="flex-1">
+                                  <h4 className="font-bold text-slate-900 text-sm">{chat.name}</h4>
+                                  <p className="text-[9px] font-bold text-slate-400 uppercase">
+                                    {chat.memberIds?.length || 0} members{newCount > 0 ? ` · +${newCount} new` : ' · all already added'}
+                                  </p>
+                                </div>
+                                <div className={`w-6 h-6 rounded-full flex items-center justify-center ${
+                                  isSelected ? 'bg-emerald-500 text-white' : 'bg-slate-200'
+                                }`}>
+                                  {isSelected && <Check className="w-3.5 h-3.5" />}
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </div>
+                        {teamChats.length === 0 && (
+                          <div className="text-center py-6">
+                            <p className="text-sm text-slate-400 font-medium">No custom chats for this team yet</p>
+                            <p className="text-[10px] text-slate-300 mt-1">Create a chat first</p>
+                          </div>
+                        )}
+                        <button
+                          onClick={handleAddMembersToChats}
+                          disabled={addMemberSelectedChats.length === 0 || isAddingMembers}
+                          className="w-full h-12 bg-emerald-600 text-white rounded-2xl text-[10px] font-black uppercase tracking-widest disabled:opacity-40 hover:bg-emerald-700 transition-all active:scale-[0.98]"
+                        >
+                          {isAddingMembers ? 'Adding...' : `Confirm — Add to ${addMemberSelectedChats.length} Chat${addMemberSelectedChats.length !== 1 ? 's' : ''}`}
+                        </button>
+                      </div>
+                    );
+                  })()}
+                </div>
+              </motion.div>
+            </>
+          )}
+        </AnimatePresence>
       </div>
     );
   }

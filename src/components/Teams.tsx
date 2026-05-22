@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Card, CardContent } from "./ui/card";
 import { Badge } from "./ui/badge";
-import { ChevronRight, Plus, Activity, Building2, Dribbble, CircleDot, Search, Users, User as UserIcon, Calendar, FileText, MapPin, Clock, ChevronLeft, Download, ExternalLink, Trophy, ChevronDown, AlertCircle, UserPlus, ShieldCheck, UserCog, Image, FolderOpen, LogIn, CheckCircle2, Key, X, Copy, Target, Repeat, Edit2, Minus, GripVertical, Archive, Save, PartyPopper, Pencil } from "lucide-react";
+import { ChevronRight, Plus, Activity, Building2, Dribbble, CircleDot, Search, Users, User as UserIcon, Calendar, FileText, MapPin, Clock, ChevronLeft, Download, ExternalLink, Trophy, ChevronDown, AlertCircle, UserPlus, ShieldCheck, UserCog, Image, FolderOpen, LogIn, CheckCircle2, Key, X, Copy, Target, Repeat, Edit2, Minus, GripVertical, Archive, Save, PartyPopper, Pencil, Trash2, LogOut } from "lucide-react";
 import { cn } from "../lib/utils";
 import { motion, AnimatePresence } from "motion/react";
 import DefaultAvatar from "./DefaultAvatar";
@@ -105,7 +105,7 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
   };
 
   const TEAM_EVENT_TYPE_STYLES = {
-    training: { bg: 'bg-blue-100',   text: 'text-blue-600',   selectedBg: 'bg-blue-400/40',   selectedText: 'text-white' },
+    training: { bg: 'bg-orange-100',  text: 'text-orange-600', selectedBg: 'bg-orange-400/40', selectedText: 'text-white' },
     match:    { bg: 'bg-red-100',    text: 'text-red-500',    selectedBg: 'bg-red-400/40',    selectedText: 'text-white' },
     meeting:  { bg: 'bg-amber-100',  text: 'text-amber-600',  selectedBg: 'bg-amber-400/40',  selectedText: 'text-white' },
     event:    { bg: 'bg-purple-100', text: 'text-purple-500', selectedBg: 'bg-purple-400/40', selectedText: 'text-white' },
@@ -255,6 +255,8 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
   const [editTeamLogo, setEditTeamLogo] = useState<string | null>(null);
   const [editTeamLogoFile, setEditTeamLogoFile] = useState<File | null>(null);
   const [isLeaveModalOpen, setIsLeaveModalOpen] = useState(false);
+  const [isDeleteTeamModalOpen, setIsDeleteTeamModalOpen] = useState(false);
+  const [isDeletingTeam, setIsDeletingTeam] = useState(false);
   const [isSquadEditMode, setIsSquadEditMode] = useState(false);
   const [rosterMembers, setRosterMembers] = useState<any[]>([]);
   const [memberToRemove, setMemberToRemove] = useState<any>(null);
@@ -601,7 +603,12 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
     const members = StorageService.getTeamMembers(teamId);
     const children = JSON.parse(localStorage.getItem('gameday_children') || '[]')
       .filter((c: any) => c.teamIds?.includes(teamId));
-    return members.length + children.length;
+    // Include the coach/creator if not already in the roster
+    const allTeams = [...MOCK_TEAMS, ...StorageService.getCustomTeams()];
+    const team = allTeams.find(t => t.id === teamId);
+    const coachId = team?.coachId || team?.createdBy;
+    const coachInRoster = coachId ? members.some((m: any) => m.id === coachId) : true;
+    return (coachInRoster ? members.length : members.length + 1) + children.length;
   };
 
   return (
@@ -995,14 +1002,6 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                 )}
 
 
-                {user?.role !== 'club' && (
-                  <button
-                    onClick={() => setIsLeaveModalOpen(true)}
-                    className="w-full mt-3 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest text-red-400 hover:bg-red-50 active:scale-[0.98] transition-all border border-red-100"
-                  >
-                    Leave Team
-                  </button>
-                )}
               </div>
             </motion.div>
           ) : viewingDetail === 'gallery' ? (
@@ -1437,7 +1436,11 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                     return (
                       <div className="flex justify-between items-center px-2 mb-3">
                         <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">
-                          {rosterMembers.length + teamChildren.length} Members
+                          {(() => {
+                            const cId = selectedTeam?.coachId || selectedTeam?.createdBy || 'coach-sarah';
+                            const coachInRoster = rosterMembers.some(m => m.id === cId);
+                            return (coachInRoster ? rosterMembers.length : rosterMembers.length + 1) + teamChildren.length;
+                          })()} Members
                         </span>
                         <div className="relative w-32">
                           <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3 h-3 text-slate-400" />
@@ -1446,15 +1449,32 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                       </div>
                     );
                   })()}
-                  {rosterMembers.length === 0 ? (
-                    <div className="p-8 text-center bg-slate-50 rounded-3xl border-2 border-dashed border-slate-200">
-                      <Users className="w-8 h-8 text-slate-300 mx-auto mb-2" />
-                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-relaxed">
-                        No members yet — share your team code to get started.
-                      </p>
-                    </div>
-                  ) : (
-                    rosterMembers.map((member, idx) => (
+                  {(() => {
+                    // Include the coach in the members list if not already present
+                    const coachId = selectedTeam?.coachId || selectedTeam?.createdBy || 'coach-sarah';
+                    const coachAlreadyInRoster = rosterMembers.some(m => m.id === coachId);
+                    const allMembers = coachAlreadyInRoster ? rosterMembers : (() => {
+                      const coachData = StorageService.getUserData(coachId);
+                      const coachEntry = {
+                        id: coachId,
+                        name: coachData?.name || selectedTeam?.coach || user?.name || 'Coach',
+                        avatar: coachData?.avatar || null,
+                        role: 'Coach',
+                        position: 'Coach',
+                      };
+                      return [coachEntry, ...rosterMembers];
+                    })();
+
+                    if (allMembers.length === 0) return (
+                      <div className="p-8 text-center bg-slate-50 rounded-3xl border-2 border-dashed border-slate-200">
+                        <Users className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+                        <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-relaxed">
+                          No members yet — share your team code to get started.
+                        </p>
+                      </div>
+                    );
+
+                    return allMembers.map((member, idx) => (
                       <div 
                         key={member.id || idx} 
                         onClick={() => !isSquadEditMode && onTabChange?.('profile', member.id)}
@@ -1486,8 +1506,8 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                           <ChevronRight className="w-4 h-4 text-slate-300" />
                         )}
                       </div>
-                    ))
-                  )}
+                    ));
+                  })()}
 
                   {(() => {
                     const all = JSON.parse(localStorage.getItem('gameday_children') || '[]');
@@ -1497,9 +1517,11 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                         <DefaultAvatar name={child.name} size="md" className="rounded-xl border-2 border-white shadow-sm" />
                         <div className="flex-1">
                           <h4 className="font-bold text-slate-900 text-sm">{child.name}</h4>
-                          <p className="text-[10px] text-slate-400 italic">
-                            {child.parentNames?.join(' & ')}
-                          </p>
+                          {child.parentNames?.length > 0 && (
+                            <p className="text-[10px] text-slate-400 italic">
+                              Parent: {child.parentNames.join(' & ')}
+                            </p>
+                          )}
                         </div>
                         {isSquadEditMode ? (
                           <button
@@ -1736,36 +1758,39 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                           <CardContent className="p-0">
                             <button 
                               onClick={() => setExpandedEventId(isExpanded ? null : event.id)}
-                              className="w-full p-4 flex items-center justify-between hover:bg-slate-100/50 transition-colors text-left"
+                              className="w-full px-3 py-2.5 flex items-center justify-between hover:bg-slate-100/50 transition-colors text-left"
                             >
-                              <div className="flex items-center gap-4">
-                                <div className={`w-10 h-10 rounded-xl flex flex-col items-center justify-center shrink-0 relative ${
+                              <div className="flex items-center gap-3">
+                                <div className={`w-14 h-14 rounded-2xl flex flex-col items-center justify-center shrink-0 relative ${
                                   event.type === 'match' ? 'bg-red-50 text-red-500' :
                                   event.type === 'meeting' ? 'bg-amber-50 text-amber-500' :
                                   event.type === 'event' ? 'bg-purple-50 text-purple-500' :
                                   event.type === 'custom' ? 'bg-slate-50 text-slate-500' :
-                                  'bg-blue-50 text-blue-500'
+                                  'bg-orange-50 text-orange-500'
                                 }`}>
-                                  {event.type === 'match' && <Trophy className="w-4 h-4" />}
-                                  {event.type === 'training' && <Activity className="w-4 h-4" />}
-                                  {event.type === 'meeting' && <Users className="w-4 h-4" />}
-                                  {event.type === 'event' && <PartyPopper className="w-4 h-4" />}
-                                  {event.type === 'custom' && <Pencil className="w-4 h-4" />}
-                                  {!['match','training','meeting','event','custom'].includes(event.type) && <Activity className="w-4 h-4" />}
-                                  <span className="text-[7px] font-black uppercase mt-0.5">{event.type}</span>
-                                  
+                                  {event.type === 'match' && <Trophy className="w-5 h-5" />}
+                                  {event.type === 'training' && <Activity className="w-5 h-5" />}
+                                  {event.type === 'meeting' && <Users className="w-5 h-5" />}
+                                  {event.type === 'event' && <PartyPopper className="w-5 h-5" />}
+                                  {event.type === 'custom' && <Pencil className="w-5 h-5" />}
+                                  {!['match','training','meeting','event','custom'].includes(event.type) && <Activity className="w-5 h-5" />}
+                                  <span className="text-[8px] font-black uppercase mt-0.5">{event.type}</span>
+
                                   {/* Attendance Indicator Dot */}
                                   {attendance[event.id] && (
-                                    <motion.div 
+                                    <motion.div
                                       initial={{ scale: 0 }}
                                       animate={{ scale: 1 }}
-                                      className={`absolute -top-1 -right-1 w-2.5 h-2.5 rounded-full border-2 border-white shadow-sm ${
+                                      className={`absolute -top-1 -right-1 w-3 h-3 rounded-full border-2 border-white shadow-sm ${
                                         attendance[event.id] === 'going' ? 'bg-green-500' : 'bg-red-500'
-                                      }`} 
+                                      }`}
                                     />
                                   )}
                                 </div>
                                 <div>
+                                  {(selectedTeam || (event as any).teamName) && (
+                                    <p className="text-[9px] font-black uppercase tracking-widest text-primary mb-0.5">{teamNames[selectedTeam?.id || ''] || selectedTeam?.name || (event as any).teamName}</p>
+                                  )}
                                   <h4 className="font-bold text-slate-900 text-sm">{event.title}</h4>
                                   <p className="text-[10px] text-slate-400 font-medium">{formatEventDate(event.date)} • {formatEventTime(event.time)}</p>
                                 </div>
@@ -2850,35 +2875,51 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
 
                           <div className="grid grid-cols-2 gap-3">
                             <div className="space-y-1">
-                              <label className="text-[8px] font-black 
-                                               text-slate-400 uppercase 
+                              <label className="text-[8px] font-black
+                                               text-slate-400 uppercase
                                                tracking-widest">
                                 From
                               </label>
-                              <input
-                                type="date"
-                                value={teamNewEvent.repeatStartDate}
-                                onChange={e => setTeamNewEvent(p => ({
-                                  ...p, repeatStartDate: e.target.value
-                                }))}
-                                className="w-full h-11 bg-slate-50 rounded-xl px-3 text-[11px] font-bold text-slate-700 border-none outline-none"
-                              />
+                              <div className="relative">
+                                <input
+                                  type="date"
+                                  value={teamNewEvent.repeatStartDate}
+                                  onChange={e => setTeamNewEvent(p => ({
+                                    ...p, repeatStartDate: e.target.value
+                                  }))}
+                                  className="w-full h-11 bg-slate-50 rounded-xl px-3 text-[11px] font-bold text-slate-700 border-none outline-none opacity-0 absolute inset-0 z-10 cursor-pointer"
+                                />
+                                <div className="w-full h-11 bg-slate-50 rounded-xl px-3 flex items-center justify-between pointer-events-none">
+                                  <span className="text-[11px] font-bold text-slate-700">
+                                    {teamNewEvent.repeatStartDate ? teamNewEvent.repeatStartDate.split('-').reverse().join('/') : 'DD/MM/YYYY'}
+                                  </span>
+                                  <Calendar className="w-3.5 h-3.5 text-slate-400" />
+                                </div>
+                              </div>
                             </div>
                             <div className="space-y-1">
-                              <label className="text-[8px] font-black 
-                                               text-slate-400 uppercase 
+                              <label className="text-[8px] font-black
+                                               text-slate-400 uppercase
                                                tracking-widest">
                                 Until
                               </label>
-                              <input
-                                type="date"
-                                value={teamNewEvent.repeatEndDate}
-                                min={teamNewEvent.repeatStartDate}
-                                onChange={e => setTeamNewEvent(p => ({
-                                  ...p, repeatEndDate: e.target.value
-                                }))}
-                                className="w-full h-11 bg-slate-50 rounded-xl px-3 text-[11px] font-bold text-slate-700 border-none outline-none"
-                              />
+                              <div className="relative">
+                                <input
+                                  type="date"
+                                  value={teamNewEvent.repeatEndDate}
+                                  min={teamNewEvent.repeatStartDate}
+                                  onChange={e => setTeamNewEvent(p => ({
+                                    ...p, repeatEndDate: e.target.value
+                                  }))}
+                                  className="w-full h-11 bg-slate-50 rounded-xl px-3 text-[11px] font-bold text-slate-700 border-none outline-none opacity-0 absolute inset-0 z-10 cursor-pointer"
+                                />
+                                <div className="w-full h-11 bg-slate-50 rounded-xl px-3 flex items-center justify-between pointer-events-none">
+                                  <span className="text-[11px] font-bold text-slate-700">
+                                    {teamNewEvent.repeatEndDate ? teamNewEvent.repeatEndDate.split('-').reverse().join('/') : 'DD/MM/YYYY'}
+                                  </span>
+                                  <Calendar className="w-3.5 h-3.5 text-slate-400" />
+                                </div>
+                              </div>
                             </div>
                           </div>
                         </motion.div>
@@ -3137,19 +3178,52 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                   />
                 </div>
 
-                <button
-                  onClick={() => {
-                    if (!selectedTeam) return;
-                    if (confirm('Archive this team? It will be hidden but data will be kept.')) {
-                      StorageService.deleteTeam(selectedTeam.id);
+                {/* Leave Team */}
+                {user?.role !== 'club' && (
+                  <button
+                    onClick={() => {
                       setIsEditTeamOpen(false);
-                      window.dispatchEvent(new Event('gameday_update'));
-                    }
-                  }}
-                  className="w-full h-10 rounded-2xl border border-red-200 bg-white text-red-400 text-[9px] font-black uppercase tracking-widest transition-all hover:bg-red-50 active:scale-[0.98]"
-                >
-                  Archive Team
-                </button>
+                      setTimeout(() => setIsLeaveModalOpen(true), 200);
+                    }}
+                    className="w-full h-10 rounded-2xl border border-slate-200 bg-white text-slate-500 text-[9px] font-black uppercase tracking-widest transition-all hover:bg-slate-50 active:scale-[0.98] flex items-center justify-center gap-2"
+                  >
+                    <LogOut className="w-3.5 h-3.5" />
+                    Leave Team
+                  </button>
+                )}
+
+                {/* Archive Team — only visible to team creator/coach */}
+                {isTeamCoach && (
+                  <button
+                    onClick={() => {
+                      if (!selectedTeam) return;
+                      if (confirm('Archive this team? It will be hidden but data will be kept.')) {
+                        StorageService.deleteTeam(selectedTeam.id);
+                        setIsEditTeamOpen(false);
+                        setSelectedTeamId(null);
+                        window.dispatchEvent(new Event('gameday_update'));
+                      }
+                    }}
+                    className="w-full h-10 rounded-2xl border border-amber-200 bg-white text-amber-500 text-[9px] font-black uppercase tracking-widest transition-all hover:bg-amber-50 active:scale-[0.98] flex items-center justify-center gap-2"
+                  >
+                    <Archive className="w-3.5 h-3.5" />
+                    Archive Team
+                  </button>
+                )}
+
+                {/* Delete Team — only visible to team creator/coach */}
+                {isTeamCoach && (
+                  <button
+                    onClick={() => {
+                      setIsEditTeamOpen(false);
+                      setTimeout(() => setIsDeleteTeamModalOpen(true), 200);
+                    }}
+                    className="w-full h-10 rounded-2xl border border-red-200 bg-white text-red-400 text-[9px] font-black uppercase tracking-widest transition-all hover:bg-red-50 active:scale-[0.98] flex items-center justify-center gap-2"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    Delete Team
+                  </button>
+                )}
 
                 {/* Save button */}
                 <button
@@ -3605,14 +3679,17 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                                   children[idx].parentNames.push(user.name || 'Parent');
                                 }
                                 localStorage.setItem('gameday_children', JSON.stringify(children));
-                                
+
+                                // Sync updated child to Firestore
+                                StorageService.syncChildToFirestore(children[idx]).catch(console.error);
+
                                 // Add team to user
                                 StorageService.addTeamToUser(user.id, foundTeam.id);
                                 const savedUser = JSON.parse(localStorage.getItem('gameday_user') || '{}');
                                 const updatedTeamIds = [...new Set([...(savedUser.teamIds || []), foundTeam.id])];
                                 savedUser.teamIds = updatedTeamIds;
                                 localStorage.setItem('gameday_user', JSON.stringify(savedUser));
-                                
+
                                 localStorage.setItem(`gameday_role_${user.id}_${foundTeam.id}`, 'parent');
 
                                 // Persist join to Firestore so link never breaks
@@ -3707,7 +3784,10 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                               };
                               children.push(newChild);
                               localStorage.setItem('gameday_children', JSON.stringify(children));
-                              
+
+                              // Sync new child to Firestore
+                              StorageService.syncChildToFirestore(newChild).catch(console.error);
+
                               if (user?.id) {
                                 StorageService.addTeamToUser(user.id, foundTeam.id);
                                 const savedUser = JSON.parse(localStorage.getItem('gameday_user') || '{}');
@@ -4157,6 +4237,7 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
 
                         setCreateSuccess(true);
                         setGeneratedCode(joinCode);
+                        window.dispatchEvent(new Event('gameday_update'));
                       }}
                       disabled={!createForm.name || !createForm.sport}
                       className="w-full h-12 bg-slate-900 hover:bg-slate-800 
@@ -4265,6 +4346,120 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                                active:scale-[0.98] transition-all"
                   >
                     Leave
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          </>
+        )}
+
+        {/* Delete Team Confirmation Modal */}
+        {isDeleteTeamModalOpen && selectedTeam && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsDeleteTeamModalOpen(false)}
+              className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[60]"
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+              className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2
+                         z-[70] w-[88%] max-w-sm bg-white rounded-[2rem] shadow-2xl
+                         overflow-hidden"
+            >
+              {/* Dark header */}
+              <div className="bg-red-600 p-6 flex items-center justify-between">
+                <div className="flex items-center gap-3">
+                  <div className="w-8 h-8 rounded-xl bg-white/15 flex items-center justify-center">
+                    <Trash2 className="w-4 h-4 text-white" />
+                  </div>
+                  <h3 className="text-base font-black uppercase italic text-white">
+                    Delete Team
+                  </h3>
+                </div>
+                <button
+                  onClick={() => setIsDeleteTeamModalOpen(false)}
+                  className="w-8 h-8 rounded-xl bg-white/10 hover:bg-white/20
+                             flex items-center justify-center text-white/60
+                             hover:text-white transition-all"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Body */}
+              <div className="p-6 space-y-5">
+                <p className="text-sm font-medium text-slate-600 leading-relaxed">
+                  Are you sure you want to delete{' '}
+                  <span className="font-black text-slate-900">
+                    {teamNames[selectedTeam?.id || ''] || selectedTeam?.name}
+                  </span>
+                  ? This will remove the team for all members. The team data will be safely stored and can be recovered if needed.
+                </p>
+
+                <div className="flex gap-3">
+                  <button
+                    onClick={() => setIsDeleteTeamModalOpen(false)}
+                    className="flex-1 h-12 rounded-2xl bg-slate-100 text-slate-600
+                               text-[11px] font-black uppercase tracking-widest
+                               hover:bg-slate-200 active:scale-[0.98] transition-all"
+                  >
+                    Cancel
+                  </button>
+
+                  <button
+                    disabled={isDeletingTeam}
+                    onClick={async () => {
+                      if (!selectedTeam || !user?.id) return;
+                      setIsDeletingTeam(true);
+                      try {
+                        const teamId = selectedTeam.id;
+
+                        // 1. Gather team data for soft-delete backup
+                        const customTeams = JSON.parse(localStorage.getItem('gameday_custom_teams') || '[]');
+                        const teamData = customTeams.find((t: any) => t.id === teamId) || selectedTeam;
+                        const members = JSON.parse(localStorage.getItem(`gameday_team_members_${teamId}`) || '[]');
+                        const announcements = JSON.parse(localStorage.getItem('gameday_announcements') || '[]')
+                          .filter((a: any) => a.teamId === teamId);
+                        const events = JSON.parse(localStorage.getItem('gameday_events') || '[]')
+                          .filter((e: any) => e.teamId === teamId);
+
+                        // 2. Store in Firebase deletedTeams collection for recovery
+                        await setDoc(doc(db, 'deletedTeams', teamId), {
+                          ...teamData,
+                          teamName: teamNames[teamId] || teamData.name || selectedTeam.name,
+                          members,
+                          announcements,
+                          events,
+                          deletedAt: new Date().toISOString(),
+                          deletedBy: user.id,
+                          deletedByName: user.name || 'Unknown',
+                        });
+
+                        // 3. Now delete from active teams (localStorage + Firestore)
+                        await StorageService.deleteTeam(teamId);
+
+                        // 4. Fire update and navigate back
+                        window.dispatchEvent(new Event('gameday_update'));
+                        setIsDeleteTeamModalOpen(false);
+                        setSelectedTeamId(null);
+                      } catch (err) {
+                        console.error('Failed to delete team:', err);
+                        alert('Failed to delete team. Please try again.');
+                      } finally {
+                        setIsDeletingTeam(false);
+                      }
+                    }}
+                    className="flex-1 h-12 rounded-2xl bg-red-500 hover:bg-red-600
+                               text-white text-[11px] font-black uppercase tracking-widest
+                               active:scale-[0.98] transition-all disabled:opacity-50"
+                  >
+                    {isDeletingTeam ? 'Deleting...' : 'Delete'}
                   </button>
                 </div>
               </div>

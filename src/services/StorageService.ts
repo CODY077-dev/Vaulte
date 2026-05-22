@@ -25,6 +25,7 @@ export interface Announcement {
   type?: 'attendance_reminder' | 'broadcast' | 'direct_message';
   eventId?: string;
   isReminder?: boolean;
+  isUrgent?: boolean;
 }
 
 export interface AttendanceRecord {
@@ -536,7 +537,11 @@ class StorageService {
   }
 
   static async deleteAnnouncementFromFirestore(announcementId: string): Promise<void> {
-    await deleteDoc(doc(db, 'announcements', announcementId));
+    try {
+      await deleteDoc(doc(db, 'announcements', announcementId));
+    } catch (e) {
+      console.warn('[Firestore] Failed to delete announcement:', announcementId, e);
+    }
   }
 
   // ── Firestore: Real-time sync ──────────────────────────────
@@ -564,11 +569,59 @@ class StorageService {
     this.hydratedTeamIds = teamIds;
     if (teamIds.length === 0) return;
 
+    // Push any local-only data up to Firestore first
+    await this.pushLocalToFirestore(teamIds);
+
     await Promise.all([
       this.hydrateEvents(teamIds),
       this.hydrateAnnouncements(teamIds),
       this.hydrateAttendance(teamIds),
     ]);
+  }
+
+  /**
+   * One-time push: sync any localStorage data that was created before
+   * Firestore sync existed. Skips docs that already exist in Firestore.
+   */
+  private static async pushLocalToFirestore(teamIds: string[]): Promise<void> {
+    const teamSet = new Set(teamIds);
+
+    try {
+      // ── Events ──
+      const localEvents: any[] = JSON.parse(localStorage.getItem(this.EVENTS_KEY) || '[]');
+      const relevantEvents = localEvents.filter((e: any) => teamSet.has(e.teamId));
+      if (relevantEvents.length > 0) {
+        const existingSnap = await getDocs(collection(db, 'events'));
+        const existingIds = new Set(existingSnap.docs.map(d => d.id));
+        const newEvents = relevantEvents.filter((e: any) => !existingIds.has(String(e.id)));
+        await Promise.all(newEvents.map(e =>
+          setDoc(doc(db, 'events', String(e.id)), e).catch(console.warn)
+        ));
+        if (newEvents.length > 0) console.log(`[Sync] Pushed ${newEvents.length} events to Firestore`);
+      }
+
+      // ── Attendance ──
+      const localAttendance = this.getAttendance();
+      const attendanceEntries: any[] = [];
+      for (const [eventId, records] of Object.entries(localAttendance)) {
+        for (const record of (records as any[])) {
+          attendanceEntries.push({ eventId, ...record });
+        }
+      }
+      if (attendanceEntries.length > 0) {
+        const existingSnap = await getDocs(collection(db, 'attendance'));
+        const existingIds = new Set(existingSnap.docs.map(d => d.id));
+        const newEntries = attendanceEntries.filter(a =>
+          !existingIds.has(`${a.eventId}_${a.userId}`)
+        );
+        await Promise.all(newEntries.map(a =>
+          setDoc(doc(db, 'attendance', `${a.eventId}_${a.userId}`), a).catch(console.warn)
+        ));
+        if (newEntries.length > 0) console.log(`[Sync] Pushed ${newEntries.length} attendance records to Firestore`);
+      }
+    } catch (e) {
+      console.warn('[Sync] Push local→Firestore failed:', e);
+    }
   }
 
   static teardownListeners(): void {
@@ -716,6 +769,70 @@ class StorageService {
     }
   }
 
+  // ── Firestore: Children ─────────────────────────────────
+  static async syncChildToFirestore(child: any): Promise<void> {
+    try {
+      await setDoc(doc(db, 'children', child.id), { ...child, updatedAt: new Date().toISOString() });
+    } catch (e) {
+      console.warn('[Firestore] Child sync failed:', e);
+    }
+  }
+
+  static async getAllChildrenFromFirestore(): Promise<any[]> {
+    try {
+      const snap = await getDocs(collection(db, 'children'));
+      return snap.docs.map(d => d.data());
+    } catch (e) {
+      console.warn('[Firestore] Failed to fetch children:', e);
+      return [];
+    }
+  }
+
+  static async hydrateChildren(userId: string): Promise<void> {
+    try {
+      // 1. Push any local-only children up to Firestore first
+      const localChildren: any[] = JSON.parse(localStorage.getItem('gameday_children') || '[]');
+      const myLocalChildren = localChildren.filter((c: any) => c.parentIds?.includes(userId));
+
+      if (myLocalChildren.length > 0) {
+        const existingSnap = await getDocs(collection(db, 'children'));
+        const existingIds = new Set(existingSnap.docs.map(d => d.id));
+        const toPush = myLocalChildren.filter((c: any) => !existingIds.has(c.id));
+        if (toPush.length > 0) {
+          await Promise.all(toPush.map(c =>
+            setDoc(doc(db, 'children', c.id), { ...c, updatedAt: new Date().toISOString() }).catch(console.warn)
+          ));
+          console.log(`[Sync] Pushed ${toPush.length} children to Firestore`);
+        }
+      }
+
+      // 2. Pull from Firestore and merge into local
+      const firestoreChildren = await this.getAllChildrenFromFirestore();
+      const relevant = firestoreChildren.filter((c: any) =>
+        c.parentIds?.includes(userId)
+      );
+      if (relevant.length === 0) return;
+
+      const freshLocal: any[] = JSON.parse(localStorage.getItem('gameday_children') || '[]');
+      const localIds = new Set(freshLocal.map((c: any) => c.id));
+
+      for (const child of relevant) {
+        if (localIds.has(child.id)) {
+          const idx = freshLocal.findIndex((c: any) => c.id === child.id);
+          if (idx !== -1) {
+            freshLocal[idx] = { ...freshLocal[idx], ...child };
+          }
+        } else {
+          freshLocal.push(child);
+        }
+      }
+      localStorage.setItem('gameday_children', JSON.stringify(freshLocal));
+      this.dispatch();
+    } catch (e) {
+      console.warn('[StorageService] Children hydration failed:', e);
+    }
+  }
+
   // ── Firestore: Full Delete Team ───────────────────────────
   static async deleteTeam(teamId: string): Promise<void> {
     // Remove from localStorage
@@ -757,12 +874,18 @@ class StorageService {
       localStorage.setItem('gameday_user', JSON.stringify(activeUser));
     }
     const children = JSON.parse(localStorage.getItem('gameday_children') || '[]');
-    localStorage.setItem('gameday_children', JSON.stringify(
-      children.map((c: any) => ({
-        ...c,
-        teamIds: (c.teamIds || []).filter((id: string) => id !== teamId)
-      }))
-    ));
+    const updatedChildren = children.map((c: any) => ({
+      ...c,
+      teamIds: (c.teamIds || []).filter((id: string) => id !== teamId)
+    }));
+    localStorage.setItem('gameday_children', JSON.stringify(updatedChildren));
+
+    // Sync affected children to Firestore
+    for (const child of updatedChildren) {
+      if (children.find((c: any) => c.id === child.id && c.teamIds?.includes(teamId))) {
+        this.syncChildToFirestore(child).catch(console.error);
+      }
+    }
 
     // Track deleted mock team IDs so hardcoded teams can be hidden
     const deletedMocks = JSON.parse(localStorage.getItem('gameday_deleted_mock_teams') || '[]');

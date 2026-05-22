@@ -71,6 +71,7 @@ export default function Home({ user, onTabChange }: HomeProps) {
   const [editContent, setEditContent] = useState('');
   const [editTitle, setEditTitle] = useState('');
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [isUrgent, setIsUrgent] = useState(false);
   const [teamLogos, setTeamLogos] = useState<Record<string, string>>({});
   const [teamNames, setTeamNames] = useState<Record<string, string>>({});
 
@@ -79,15 +80,33 @@ export default function Home({ user, onTabChange }: HomeProps) {
   const [pendingAnnouncementId, setPendingAnnouncementId] = useState<string | null>(null);
   const [updateTrigger, setUpdateTrigger] = useState(0);
 
-  const isCoach = user?.role === 'coach' || 
-    (user?.teamIds || []).some(tid => 
-      localStorage.getItem(`gameday_role_${user?.id}_${tid}`) === 'coach'
-    );
+  // Read fresh teamIds from localStorage so we pick up newly created teams
+  // even before App.tsx re-renders with updated user prop
+  const freshUser = user?.id ? JSON.parse(localStorage.getItem('gameday_user') || '{}') : null;
+  const allTeamIds = [...new Set([...(user?.teamIds || []), ...(freshUser?.teamIds || [])])];
+
+  // Check all custom teams to see if this user is creator/coach/manager of any
+  const customTeams: any[] = JSON.parse(localStorage.getItem('gameday_custom_teams') || '[]');
+
+  const isCoach = user?.role === 'coach' ||
+    user?.role === 'club' ||
+    allTeamIds.some(tid => {
+      const storedRole = localStorage.getItem(`gameday_role_${user?.id}_${tid}`);
+      if (storedRole === 'coach' || storedRole === 'manager') return true;
+      // Fallback: check if user is the creator or coachId on the team object
+      const team = customTeams.find((t: any) => t.id === tid);
+      if (team && (team.createdBy === user?.id || team.coachId === user?.id)) {
+        // Auto-repair the missing role key
+        localStorage.setItem(`gameday_role_${user?.id}_${tid}`, 'coach');
+        return true;
+      }
+      return false;
+    });
 
   const hasChildren = JSON.parse(localStorage.getItem('gameday_children') || '[]')
     .some((c: any) => c.parentIds?.includes(user?.id));
 
-  const isPlayer = !isCoach || (user?.teamIds || []).some(tid =>
+  const isPlayer = !isCoach || allTeamIds.some(tid =>
     localStorage.getItem(`gameday_role_${user?.id}_${tid}`) === 'player'
   );
 
@@ -393,7 +412,7 @@ export default function Home({ user, onTabChange }: HomeProps) {
   }, [user]);
 
   return (
-    <div className="bg-slate-50 min-h-screen pb-24">
+    <div className="bg-white min-h-screen pb-24">
       {/* Header Section */}
       <div className="pt-6 pb-4 px-4 space-y-4">
         <div className="flex justify-between items-center px-2">
@@ -506,7 +525,7 @@ export default function Home({ user, onTabChange }: HomeProps) {
                               {(() => {
                                 const allTeams = [...MOCK_TEAMS, ...StorageService.getCustomTeams()];
                                 const teamColor = allTeams.find(t => t.id === event.teamId)?.color || '#6366f1';
-                                const name = teamNames[event.teamId] || allTeams.find(t => t.id === event.teamId)?.name || '';
+                                const name = teamNames[event.teamId] || allTeams.find(t => t.id === event.teamId)?.name || (event as any).teamName || '';
                                 return name ? (
                                   <>
                                     <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: teamColor }} />
@@ -685,23 +704,36 @@ export default function Home({ user, onTabChange }: HomeProps) {
 
                     return (
                       <div className="space-y-3">
+                        {sorted.length === 0 && (
+                          <div className="p-8 text-center bg-white rounded-2xl border-2 border-dashed border-slate-100">
+                            <Bell className="w-8 h-8 text-slate-200 mx-auto mb-2" />
+                            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">No announcements yet</p>
+                          </div>
+                        )}
                         {/* Show first 3 only */}
                         {visible.map((ann) => (
-                          <div key={ann.id} className="bg-white rounded-2xl shadow-sm overflow-hidden flex">
-                            <div className="w-1 bg-primary shrink-0" />
-                            <div className="flex-1 py-2.5 px-4 relative">
+                          <div key={ann.id} className={`bg-white rounded-2xl overflow-hidden ${ann.isUrgent ? 'border-2 border-red-400 border-l-[4px] border-l-red-500' : 'border border-primary/30 border-l-[3px] border-l-primary'}`}>
+                            <div className={`flex-1 relative ${ann.isUrgent ? 'py-3.5 px-4' : 'py-2.5 px-4'}`}>
+                              {ann.isUrgent && (
+                                <span className="absolute top-3 right-3 bg-red-50 text-red-500 text-[8px] font-black uppercase tracking-widest px-2.5 py-1 rounded-full border border-red-100">Urgent</span>
+                              )}
                               <div className="flex items-center gap-1.5 mb-1">
-                                {ann.type === 'attendance_reminder' && (
+                                {ann.isUrgent && (
+                                  <div className="w-4 h-4 bg-red-50 rounded-full flex items-center justify-center">
+                                    <Bell className="w-2.5 h-2.5 text-red-500" />
+                                  </div>
+                                )}
+                                {ann.type === 'attendance_reminder' && !ann.isUrgent && (
                                   <div className="w-4 h-4 bg-primary/10 rounded-full flex items-center justify-center">
                                     <Clock className="w-2.5 h-2.5 text-primary" />
                                   </div>
                                 )}
                                 <div className="mb-1">
-                                  <p className="text-[8px] font-black uppercase tracking-widest text-primary mb-0.5">{ann.teamName}</p>
-                                  <p className="text-[11px] font-black uppercase text-slate-900">{ann.title}</p>
+                                  <p className={`text-[8px] font-black uppercase tracking-widest mb-0.5 ${ann.isUrgent ? 'text-red-400' : 'text-primary'}`}>{ann.teamName}</p>
+                                  <p className={`font-black uppercase text-slate-900 ${ann.isUrgent ? 'text-[12px]' : 'text-[11px]'}`}>{ann.title}</p>
                                 </div>
                               </div>
-                              <p className="text-[11px] text-slate-600 leading-relaxed mb-1.5">{ann.content}</p>
+                              <p className={`text-slate-600 leading-relaxed mb-1.5 ${ann.isUrgent ? 'text-[12px]' : 'text-[11px]'}`}>{ann.content}</p>
                               
                               {ann.type === 'attendance_reminder' && ann.eventId && (
                                 <div className="mb-3">
@@ -738,7 +770,7 @@ export default function Home({ user, onTabChange }: HomeProps) {
                               )}
 
                               <div className="flex items-center justify-between">
-                                <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest">
+                                <p className={`text-[8px] font-bold uppercase tracking-widest ${ann.isUrgent ? 'text-red-400' : 'text-slate-400'}`}>
                                   — Sent by {ann.senderName}
                                 </p>
                                 <div className="flex items-center gap-2">
@@ -750,7 +782,7 @@ export default function Home({ user, onTabChange }: HomeProps) {
                                       <span className="text-[14px] font-bold leading-none mb-[1px]">−</span>
                                     </button>
                                   )}
-                                  <p className="text-[9px] font-bold text-slate-400">
+                                  <p className={`text-[9px] font-bold ${ann.isUrgent ? 'text-red-400' : 'text-slate-400'}`}>
                                     {formatAnnouncementDate(ann.timestamp)}
                                   </p>
                                 </div>
@@ -1084,6 +1116,12 @@ export default function Home({ user, onTabChange }: HomeProps) {
                 </div>
 
                 <div className="space-y-3 px-4">
+                  {attendanceTeams.length === 0 && (
+                    <div className="p-8 text-center bg-white rounded-2xl border-2 border-dashed border-slate-100">
+                      <Users className="w-8 h-8 text-slate-200 mx-auto mb-2" />
+                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">No team attendance yet</p>
+                    </div>
+                  )}
                   {visibleTeams.map(data => renderAttendanceCard(data))}
                   {remainingCount > 0 && (
                     <button
@@ -1102,7 +1140,10 @@ export default function Home({ user, onTabChange }: HomeProps) {
 
             {hasChildren && (
               <section className="space-y-3 px-4 pb-2">
-                <h2 className="text-xs font-black text-slate-400 uppercase tracking-widest px-1">My Kids</h2>
+                <h3 className="text-[11px] font-black text-slate-900 uppercase italic tracking-[0.18em] flex items-center gap-2 px-1">
+                  <Users className="w-[13px] h-[13px] text-slate-900" />
+                  My Kids
+                </h3>
                 {JSON.parse(localStorage.getItem('gameday_children') || '[]')
                   .filter((c: any) => c.parentIds?.includes(user?.id))
                   .map((child: any) => (
@@ -1388,11 +1429,14 @@ export default function Home({ user, onTabChange }: HomeProps) {
                                 new Date(a.timestamp).getTime()
                     );
                   return sorted.map((ann) => (
-                    <div key={ann.id} className="bg-white rounded-2xl shadow-sm overflow-hidden flex">
-                      <div className="w-1 bg-primary shrink-0" />
-                      <div className="flex-1 py-2.5 px-4 relative">
+                    <div key={ann.id} className={`bg-white rounded-2xl overflow-hidden ${ann.isUrgent ? 'border-2 border-red-400 border-l-[4px] border-l-red-500' : 'border border-primary/30 border-l-[3px] border-l-primary'}`}>
+                      <div className={`flex-1 relative ${ann.isUrgent ? 'py-3.5 px-4' : 'py-2.5 px-4'}`}>
+                      {/* Urgent badge */}
+                      {ann.isUrgent && (
+                        <span className="absolute top-3 right-3 bg-red-50 text-red-500 text-[8px] font-black uppercase tracking-widest px-2.5 py-1 rounded-full border border-red-100">Urgent</span>
+                      )}
                       {/* Edit/Delete buttons — only for sender */}
-                      {user?.id === ann.senderId && (
+                      {user?.id === ann.senderId && !ann.isUrgent && (
                         <div className="absolute top-3 right-3 flex gap-1 transition-opacity">
                           <button
                             onClick={() => {
@@ -1409,6 +1453,33 @@ export default function Home({ user, onTabChange }: HomeProps) {
                               const all = StorageService.getAnnouncements();
                               const updated = all.filter(a => a.id !== ann.id);
                               localStorage.setItem('gameday_announcements', JSON.stringify(updated));
+                              StorageService.deleteAnnouncementFromFirestore(ann.id);
+                              window.dispatchEvent(new Event('gameday_update'));
+                            }}
+                            className="w-7 h-7 rounded-lg bg-red-50 hover:bg-red-100 flex items-center justify-center text-red-400 hover:text-red-600 transition-all"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      )}
+                      {user?.id === ann.senderId && ann.isUrgent && (
+                        <div className="absolute top-3 right-28 flex gap-1 transition-opacity">
+                          <button
+                            onClick={() => {
+                              setEditingAnnouncementId(ann.id);
+                              setEditTitle(ann.title);
+                              setEditContent(ann.content);
+                            }}
+                            className="w-7 h-7 rounded-lg bg-slate-100 hover:bg-slate-200 flex items-center justify-center text-slate-400 hover:text-slate-600 transition-all"
+                          >
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => {
+                              const all = StorageService.getAnnouncements();
+                              const updated = all.filter(a => a.id !== ann.id);
+                              localStorage.setItem('gameday_announcements', JSON.stringify(updated));
+                              StorageService.deleteAnnouncementFromFirestore(ann.id);
                               window.dispatchEvent(new Event('gameday_update'));
                             }}
                             className="w-7 h-7 rounded-lg bg-red-50 hover:bg-red-100 flex items-center justify-center text-red-400 hover:text-red-600 transition-all"
@@ -1418,17 +1489,22 @@ export default function Home({ user, onTabChange }: HomeProps) {
                         </div>
                       )}
                       <div className="flex items-center gap-1.5 mb-1">
-                        {ann.type === 'attendance_reminder' && (
+                        {ann.isUrgent && (
+                          <div className="w-4 h-4 bg-red-50 rounded-full flex items-center justify-center">
+                            <Bell className="w-2.5 h-2.5 text-red-500" />
+                          </div>
+                        )}
+                        {ann.type === 'attendance_reminder' && !ann.isUrgent && (
                           <div className="w-4 h-4 bg-primary/10 rounded-full flex items-center justify-center">
                             <Clock className="w-2.5 h-2.5 text-primary" />
                           </div>
                         )}
                         <div className="mb-1">
-                          <p className="text-[8px] font-black uppercase tracking-widest text-primary mb-0.5">{ann.teamName}</p>
-                          <p className="text-[11px] font-black uppercase text-slate-900">{ann.title}</p>
+                          <p className={`text-[8px] font-black uppercase tracking-widest mb-0.5 ${ann.isUrgent ? 'text-red-400' : 'text-primary'}`}>{ann.teamName}</p>
+                          <p className={`font-black uppercase text-slate-900 ${ann.isUrgent ? 'text-[12px]' : 'text-[11px]'}`}>{ann.title}</p>
                         </div>
                       </div>
-                      <p className="text-[11px] text-slate-600 leading-relaxed mb-1.5">{ann.content}</p>
+                      <p className={`text-slate-600 leading-relaxed mb-1.5 ${ann.isUrgent ? 'text-[12px]' : 'text-[11px]'}`}>{ann.content}</p>
                       
                       {ann.type === 'attendance_reminder' && ann.eventId && (
                         <div className="mb-3">
@@ -1465,10 +1541,10 @@ export default function Home({ user, onTabChange }: HomeProps) {
                       )}
 
                       <div className="flex items-center justify-between">
-                        <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest">
+                        <p className={`text-[8px] font-bold uppercase tracking-widest ${ann.isUrgent ? 'text-red-400' : 'text-slate-400'}`}>
                           — Sent by {ann.senderName}
                         </p>
-                        <p className="text-[9px] font-bold text-slate-400">
+                        <p className={`text-[9px] font-bold ${ann.isUrgent ? 'text-red-400' : 'text-slate-400'}`}>
                           {formatAnnouncementDate(ann.timestamp)}
                         </p>
                       </div>
@@ -1770,6 +1846,7 @@ export default function Home({ user, onTabChange }: HomeProps) {
                       const all = StorageService.getAnnouncements();
                       const updated = all.filter(a => a.id !== confirmDeleteId);
                       localStorage.setItem('gameday_announcements', JSON.stringify(updated));
+                      StorageService.deleteAnnouncementFromFirestore(confirmDeleteId!);
                       window.dispatchEvent(new Event('gameday_update'));
                       setConfirmDeleteId(null);
                     }}
@@ -1973,6 +2050,7 @@ export default function Home({ user, onTabChange }: HomeProps) {
                             clubId: announcementClubId,
                             title: broadcastTitle.trim() || (user.role === 'club' ? 'Club Announcement' : 'Coach Update'),
                             content: broadcastText.trim(),
+                            isUrgent,
                           });
                         });
                       }
@@ -1986,6 +2064,7 @@ export default function Home({ user, onTabChange }: HomeProps) {
                             clubId: announcementClubId,
                             title: broadcastTitle.trim() || 'Direct Message',
                             content: broadcastText.trim(),
+                            isUrgent,
                           });
                         });
                       }
@@ -1998,11 +2077,13 @@ export default function Home({ user, onTabChange }: HomeProps) {
                           clubId: announcementClubId,
                           title: broadcastTitle.trim() || (user.role === 'club' ? 'Club Announcement' : 'Coach Update'),
                           content: broadcastText.trim(),
+                          isUrgent,
                         });
                       }
                       setBroadcastText(''); setBroadcastTitle('');
                       setSelectedTeamIds([]); setSelectedPlayerIds([]);
                       setShowTeamsPicker(false); setShowDirectPicker(false);
+                      setIsUrgent(false);
                       setIsBroadcastOpen(false);
                     }}
                     className="absolute bottom-3 right-3 w-9 h-9 bg-primary/10 hover:bg-primary/20 rounded-xl flex items-center justify-center text-primary active:scale-95 transition-all"
@@ -2014,14 +2095,14 @@ export default function Home({ user, onTabChange }: HomeProps) {
                 {/* Mark as Urgent toggle */}
                 <div className="flex items-center justify-between px-1">
                   <div className="flex items-center gap-2">
-                    <Bell className="w-3.5 h-3.5 text-slate-400" />
-                    <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Mark as Urgent</span>
+                    <Bell className={`w-3.5 h-3.5 ${isUrgent ? 'text-red-500' : 'text-slate-400'}`} />
+                    <span className={`text-[10px] font-black uppercase tracking-widest ${isUrgent ? 'text-red-500' : 'text-slate-500'}`}>Mark as Urgent</span>
                   </div>
                   <button
-                    onClick={() => {}}
-                    className="w-10 h-6 rounded-full bg-slate-200 relative transition-colors"
+                    onClick={() => setIsUrgent(!isUrgent)}
+                    className={`w-10 h-6 rounded-full relative transition-colors ${isUrgent ? 'bg-red-500' : 'bg-slate-200'}`}
                   >
-                    <span className="absolute top-1 left-1 w-4 h-4 rounded-full bg-white shadow-sm transition-transform" />
+                    <span className={`absolute top-1 w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${isUrgent ? 'left-5' : 'left-1'}`} />
                   </button>
                 </div>
               </div>
