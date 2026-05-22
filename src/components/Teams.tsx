@@ -612,7 +612,7 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
   };
 
   return (
-    <div className="bg-slate-50 min-h-screen pb-24 relative">
+    <div className="bg-white min-h-screen pb-24 relative">
       {selectedTeamId && selectedTeam ? (
         <>
         <AnimatePresence mode="wait">
@@ -801,8 +801,8 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                 {/* Important Notes Section (Like Home) */}
                 <div className="space-y-3">
                   <div className="flex items-center gap-2 px-2">
-                    <AlertCircle className="w-4 h-4 text-slate-400" />
-                    <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest">Important Notes</h3>
+                    <AlertCircle className="w-4 h-4 text-slate-900" />
+                    <h3 className="text-[11px] font-black text-slate-900 uppercase italic tracking-[0.18em]">Announcements</h3>
                   </div>
                   {(() => {
                     const teamAnnouncements = StorageService.getAnnouncements()
@@ -863,7 +863,7 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                       className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[70] w-[92%] max-w-sm max-h-[85vh] flex flex-col bg-white rounded-[2rem] shadow-2xl overflow-hidden"
                     >
                       <div className="bg-slate-900 p-6 flex items-center justify-between">
-                        <h2 className="text-white text-sm font-black uppercase tracking-widest">Important Notes</h2>
+                        <h2 className="text-white text-sm font-black uppercase tracking-widest">Announcements</h2>
                         <button onClick={() => setShowAllNotes(false)} className="text-white/70 hover:text-white">
                           <X className="w-5 h-5" />
                         </button>

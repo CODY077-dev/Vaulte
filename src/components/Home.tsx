@@ -679,9 +679,12 @@ export default function Home({ user, onTabChange }: HomeProps) {
                 className="space-y-3 px-4"
               >
                 <div className="flex items-center justify-between px-1">
-                  <h3 className="text-[11px] font-black text-slate-900 uppercase italic tracking-[0.18em]">
-                    Announcements
-                  </h3>
+                  <div className="flex items-center gap-2">
+                    <AlertCircle className="w-4 h-4 text-slate-900" />
+                    <h3 className="text-[11px] font-black text-slate-900 uppercase italic tracking-[0.18em]">
+                      Announcements
+                    </h3>
+                  </div>
                   {totalAnnouncementsCount > 0 && (
                     <span className="min-w-[28px] h-[26px] px-2 rounded-full flex items-center justify-center text-white text-[11px] font-black tabular-nums bg-primary">
                       {totalAnnouncementsCount}

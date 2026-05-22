@@ -397,7 +397,7 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
   };
 
   return (
-    <div className="bg-slate-50 min-h-screen pb-24">
+    <div className="bg-white min-h-screen pb-24">
       {/* Header */}
       <div className="pt-6 pb-4 px-4 flex justify-between items-center">
         <div className="space-y-2">
