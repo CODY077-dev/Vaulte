@@ -8,6 +8,7 @@ export interface User {
   avatar?: string;
   email?: string;
   phone?: string;
+  position?: string;
   teamIds: string[];
   clubId?: string;
   linkedPlayerName?: string;

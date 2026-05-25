@@ -337,6 +337,7 @@ export default function App() {
       if (updates.avatar) firestoreUpdates.avatar = updates.avatar;
       if (updates.role) firestoreUpdates.role = updates.role;
       if (updates.roles) firestoreUpdates.roles = updates.roles;
+      if (updates.position !== undefined) firestoreUpdates.position = updates.position;
       if (Object.keys(firestoreUpdates).length > 0) {
         setDoc(doc(db, 'users', user.id), firestoreUpdates, { merge: true })
           .then(() => console.log('Firestore user sync OK:', firestoreUpdates))

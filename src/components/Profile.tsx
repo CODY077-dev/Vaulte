@@ -67,6 +67,8 @@ export default function Profile({ user, onLogout, onBack, onUpdateUser, isViewin
   const [editName, setEditName] = useState(user.name);
   const [editEmail, setEditEmail] = useState(user.email || "");
   const [editPhone, setEditPhone] = useState(user.phone || "");
+  const [showPositionModal, setShowPositionModal] = useState(false);
+  const [editPosition, setEditPosition] = useState(user.position || "");
 
   useEffect(() => {
     setEditName(user.name);
@@ -278,6 +280,27 @@ export default function Profile({ user, onLogout, onBack, onUpdateUser, isViewin
                           Link a Child
                         </button>
                       )}
+                    </div>
+                  )}
+
+                  {/* Position display + edit */}
+                  {isViewingSelf && (
+                    <button
+                      onClick={() => { setEditPosition(user.position || ''); setShowPositionModal(true); }}
+                      className="mt-2 flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-slate-200 bg-white hover:bg-slate-50 transition-colors active:scale-95"
+                    >
+                      <Activity className="w-3 h-3 text-primary" />
+                      <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">
+                        {user.position || 'Set Position'}
+                      </span>
+                    </button>
+                  )}
+                  {!isViewingSelf && user.position && (
+                    <div className="mt-2 flex items-center gap-1.5 px-3 py-1.5">
+                      <Activity className="w-3 h-3 text-primary" />
+                      <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">
+                        {user.position}
+                      </span>
                     </div>
                   )}
                 </div>
@@ -1011,6 +1034,96 @@ export default function Profile({ user, onLogout, onBack, onUpdateUser, isViewin
                                shadow-lg shadow-slate-200 disabled:opacity-50"
                   >
                     Link Profile
+                  </button>
+                </div>
+              </motion.div>
+            </>
+          )}
+        </AnimatePresence>
+
+        {/* Edit Position Modal */}
+        <AnimatePresence>
+          {showPositionModal && (
+            <>
+              <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                onClick={() => setShowPositionModal(false)}
+                className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[60]"
+              />
+              <motion.div
+                initial={{ opacity: 0, scale: 0.95, y: 20 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: 20 }}
+                className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2
+                           z-[70] w-[90%] max-w-sm bg-white rounded-[2.5rem] shadow-2xl
+                           overflow-hidden"
+              >
+                {/* Header */}
+                <div className="bg-slate-900 p-6 flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 bg-white/10 rounded-xl flex items-center justify-center">
+                      <Activity className="w-4 h-4 text-white" />
+                    </div>
+                    <h3 className="text-base font-black uppercase italic text-white leading-none">
+                      Edit Position
+                    </h3>
+                  </div>
+                  <button
+                    onClick={() => setShowPositionModal(false)}
+                    className="w-8 h-8 rounded-xl bg-white/10 hover:bg-white/20
+                               flex items-center justify-center text-white/60
+                               hover:text-white transition-all"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+
+                {/* Body */}
+                <div className="p-6 space-y-4">
+                  <div className="space-y-2">
+                    <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-1">
+                      Your Position
+                    </label>
+                    <div className="relative">
+                      <Activity className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                      <input
+                        type="text"
+                        value={editPosition}
+                        onChange={(e) => setEditPosition(e.target.value)}
+                        placeholder="e.g. Centre Back, Hooker, Midfielder"
+                        className="w-full h-12 bg-slate-50 rounded-2xl pl-12 pr-4 text-sm font-bold border-none focus:ring-2 focus:ring-primary/20 outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  <p className="text-[8px] font-bold text-slate-400 px-1 leading-tight">
+                    Your position will appear in team lineups and squad lists where you are a member.
+                  </p>
+
+                  <button
+                    onClick={async () => {
+                      onUpdateUser({ position: editPosition });
+                      StorageService.updateUserData(user.id, { position: editPosition });
+
+                      try {
+                        await updateDoc(doc(db, 'users', user.id), {
+                          position: editPosition
+                        });
+                      } catch (e) {
+                        console.error('Failed to sync position to Firestore:', e);
+                      }
+
+                      window.dispatchEvent(new Event('gameday_update'));
+                      setShowPositionModal(false);
+                    }}
+                    className="w-full h-14 bg-slate-900 text-white rounded-2xl
+                               text-[11px] font-black uppercase tracking-widest
+                               hover:bg-slate-800 active:scale-[0.98] transition-all
+                               shadow-lg shadow-slate-200"
+                  >
+                    Save Position
                   </button>
                 </div>
               </motion.div>
