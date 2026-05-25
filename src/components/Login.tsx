@@ -44,8 +44,8 @@ export default function Login({ onLogin }: LoginProps) {
     setLoading(true);
     setError(null);
     try {
-      const credential = await signInWithEmailAndPassword(auth, email, password);
-      await handleAuthSuccess(credential.user.uid);
+      // Just sign in — onAuthStateChanged in App.tsx handles full hydration
+      await signInWithEmailAndPassword(auth, email, password);
     } catch (err: any) {
       console.error(err);
       if (err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
