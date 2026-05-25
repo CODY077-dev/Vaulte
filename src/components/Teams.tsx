@@ -105,9 +105,9 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
   };
 
   const TEAM_EVENT_TYPE_STYLES = {
-    training: { bg: 'bg-orange-100',  text: 'text-orange-600', selectedBg: 'bg-orange-400/40', selectedText: 'text-white' },
+    training: { bg: 'bg-blue-100',  text: 'text-blue-600', selectedBg: 'bg-blue-400/40', selectedText: 'text-white' },
     match:    { bg: 'bg-red-100',    text: 'text-red-500',    selectedBg: 'bg-red-400/40',    selectedText: 'text-white' },
-    meeting:  { bg: 'bg-amber-100',  text: 'text-amber-600',  selectedBg: 'bg-amber-400/40',  selectedText: 'text-white' },
+    meeting:  { bg: 'bg-orange-100',  text: 'text-orange-600',  selectedBg: 'bg-orange-400/40',  selectedText: 'text-white' },
     event:    { bg: 'bg-purple-100', text: 'text-purple-500', selectedBg: 'bg-purple-400/40', selectedText: 'text-white' },
     custom:   { bg: 'bg-slate-100',  text: 'text-slate-500',  selectedBg: 'bg-white/20',      selectedText: 'text-white' },
   };
@@ -1776,10 +1776,11 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                               <div className="flex items-center gap-3">
                                 <div className={`w-14 h-14 rounded-2xl flex flex-col items-center justify-center shrink-0 relative ${
                                   event.type === 'match' ? 'bg-red-50 text-red-500' :
-                                  event.type === 'meeting' ? 'bg-amber-50 text-amber-500' :
+                                  event.type === 'training' ? 'bg-blue-50 text-blue-500' :
+                                  event.type === 'meeting' ? 'bg-orange-50 text-orange-500' :
                                   event.type === 'event' ? 'bg-purple-50 text-purple-500' :
                                   event.type === 'custom' ? 'bg-slate-50 text-slate-500' :
-                                  'bg-orange-50 text-orange-500'
+                                  'bg-blue-50 text-blue-500'
                                 }`}>
                                   {event.type === 'match' && <Trophy className="w-5 h-5" />}
                                   {event.type === 'training' && <Activity className="w-5 h-5" />}

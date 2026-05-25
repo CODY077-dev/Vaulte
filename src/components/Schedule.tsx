@@ -409,9 +409,9 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
   });
 
   const EVENT_TYPE_STYLES = {
-    training: { bg: 'bg-orange-100',  text: 'text-orange-600', selectedBg: 'bg-white', selectedText: 'text-orange-500' },
+    training: { bg: 'bg-blue-100',  text: 'text-blue-600', selectedBg: 'bg-white', selectedText: 'text-blue-500' },
     match:    { bg: 'bg-red-100',    text: 'text-red-500',    selectedBg: 'bg-white',    selectedText: 'text-red-500' },
-    meeting:  { bg: 'bg-amber-100',  text: 'text-amber-600',  selectedBg: 'bg-white',  selectedText: 'text-amber-500' },
+    meeting:  { bg: 'bg-orange-100',  text: 'text-orange-600',  selectedBg: 'bg-white',  selectedText: 'text-orange-500' },
     event:    { bg: 'bg-purple-100', text: 'text-purple-500', selectedBg: 'bg-white', selectedText: 'text-purple-500' },
     custom:   { bg: 'bg-slate-100',  text: 'text-slate-500',  selectedBg: 'bg-white',      selectedText: 'text-slate-500' },
   };
@@ -1142,8 +1142,8 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
                         <div className="flex items-center gap-3">
                           <div className={`w-14 h-14 rounded-2xl flex flex-col items-center justify-center shrink-0 relative ${
                             event.type === 'match' ? 'bg-red-50 text-red-500' :
-                            event.type === 'training' ? 'bg-orange-50 text-orange-500' :
-                            event.type === 'meeting' ? 'bg-amber-50 text-amber-500' :
+                            event.type === 'training' ? 'bg-blue-50 text-blue-500' :
+                            event.type === 'meeting' ? 'bg-orange-50 text-orange-500' :
                             event.type === 'event' ? 'bg-purple-50 text-purple-500' :
                             'bg-slate-50 text-slate-500'
                           }`}>

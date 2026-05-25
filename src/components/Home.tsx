@@ -502,9 +502,9 @@ export default function Home({ user, onTabChange }: HomeProps) {
                     const typeStyle = event.type === 'match'
                       ? { bg: 'rgba(255,255,255,0.08)', fg: 'oklch(0.80 0.13 272)', label: 'Match', Icon: Trophy }
                       : event.type === 'training'
-                        ? { bg: 'rgba(245,158,11,0.12)', fg: '#fbbf24', label: 'Training', Icon: Activity }
+                        ? { bg: 'rgba(59,130,246,0.15)', fg: '#3b82f6', label: 'Training', Icon: Activity }
                         : event.type === 'meeting'
-                          ? { bg: 'rgba(255,255,255,0.06)', fg: 'rgba(255,255,255,0.7)', label: 'Meeting', Icon: Users }
+                          ? { bg: 'rgba(245,158,11,0.12)', fg: '#f59e0b', label: 'Meeting', Icon: Users }
                           : { bg: 'rgba(168,85,247,0.15)', fg: '#a855f7', label: event.type || 'Event', Icon: PartyPopper };
 
                     const attendanceRecords = allRealAttendance[event.id] || [];
@@ -769,9 +769,9 @@ export default function Home({ user, onTabChange }: HomeProps) {
                 >
                   {(() => {
                     const EVENT_COLORS: Record<string, { bg: string; text: string }> = {
-                      training: { bg: 'bg-orange-100', text: 'text-orange-600' },
+                      training: { bg: 'bg-blue-100', text: 'text-blue-600' },
                       match:    { bg: 'bg-red-100',    text: 'text-red-500' },
-                      meeting:  { bg: 'bg-amber-100',  text: 'text-amber-600' },
+                      meeting:  { bg: 'bg-orange-100',  text: 'text-orange-600' },
                       event:    { bg: 'bg-purple-100', text: 'text-purple-500' },
                       custom:   { bg: 'bg-slate-100',  text: 'text-slate-500' },
                     };
