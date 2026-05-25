@@ -324,6 +324,39 @@ export default function Profile({ user, onLogout, onBack, onUpdateUser, isViewin
           </Card>
         </motion.div>
 
+        {/* SportsUp Fundraising Button */}
+        {isViewingSelf && (
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.25 }}
+            className="px-4 mb-4"
+          >
+            <a
+              href="https://sportsup.co.nz"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="block w-full rounded-2xl overflow-hidden active:scale-[0.98] transition-all"
+              style={{ background: 'linear-gradient(135deg, #0B1D3A 0%, #153A6B 50%, #1A4F8B 100%)' }}
+            >
+              <div className="flex items-center gap-4 px-5 py-4">
+                <img
+                  src="https://firebasestorage.googleapis.com/v0/b/game-day-app-115a4.firebasestorage.app/o/Screenshot%202026-05-24%20100022.png?alt=media&token=cf72ad8e-ea8a-4185-be10-616a088c1718"
+                  alt="SportsUp"
+                  className="w-10 h-10 object-contain shrink-0"
+                />
+                <div className="flex-1 min-w-0">
+                  <p className="text-[13px] font-black text-white uppercase italic tracking-tight leading-none">Fundraising</p>
+                  <p className="text-[9px] font-semibold text-white/50 uppercase tracking-[0.15em] mt-1">Powered by SportsUp NZ</p>
+                </div>
+                <div className="w-8 h-8 rounded-full bg-white/10 flex items-center justify-center shrink-0">
+                  <ExternalLink className="w-3.5 h-3.5 text-white/70" />
+                </div>
+              </div>
+            </a>
+          </motion.div>
+        )}
+
         {/* Menu Section */}
         {isViewingSelf && (
           <div className="grid">

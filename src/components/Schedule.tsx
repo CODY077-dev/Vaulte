@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Calendar, ChevronLeft, ChevronRight, Trophy, Activity, MapPin, Clock, ChevronDown, Plus, FileText, Target, Users, Repeat, X, Navigation, Search, CheckCircle2, CalendarPlus, Check, Bell, PartyPopper, Pencil } from "lucide-react";
+import { Calendar, ChevronLeft, ChevronRight, Trophy, Activity, MapPin, Clock, ChevronDown, Plus, FileText, Target, Users, Repeat, X, Navigation, Search, CheckCircle2, CalendarPlus, Check, Bell, PartyPopper, Pencil, Copy, Trash2 } from "lucide-react";
 
 declare global {
   interface Window {
@@ -24,6 +24,11 @@ import { User } from "../types";
 import StorageService, { AttendanceRecord } from "../services/StorageService";
 import FirestoreService from '../services/FirestoreService';
 import DefaultAvatar from "./DefaultAvatar";
+
+const getShortLocation = (location: string | undefined): string => {
+  if (!location) return '';
+  return location.split(',')[0].trim();
+};
 
 interface ScheduleProps {
   user: User | null;
@@ -63,6 +68,9 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
   const [expandedEventId, setExpandedEventId] = useState<string | null>(null);
   const [realEvents, setRealEvents] = useState<any[]>([]);
   const [isAddEventOpen, setIsAddEventOpen] = useState(false);
+  const [datePickerOpen, setDatePickerOpen] = useState(false);
+  const [dpMonth, setDpMonth] = useState(currentMonth);
+  const [dpYear, setDpYear] = useState(currentYear);
   const [attendanceModalEvent, setAttendanceModalEvent] = useState<any>(null);
   const [scheduleTeamLogos, setScheduleTeamLogos] = useState<Record<string, string>>({});
   const [scheduleLogoErrors, setScheduleLogoErrors] = useState<Record<string, boolean>>({});
@@ -72,6 +80,8 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
   const [scheduleSuccess, setScheduleSuccess] = useState(false);
   const [editingEventId, setEditingEventId] = useState<string | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [copiedEvent, setCopiedEvent] = useState<any>(null);
+  const [copyToastVisible, setCopyToastVisible] = useState(false);
   const [isSearchingLocation, setIsSearchingLocation] = useState(false);
   const [mapPin, setMapPin] = useState<{ lat: number; lng: number } | null>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -87,6 +97,26 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
     const newStatus = currentStatus === status ? null : status;
     StorageService.updateAttendance(eventId, user?.id || '', user?.name || '', newStatus);
     setAttendanceData(StorageService.getAttendance());
+  };
+
+  const handleDateClick = (day: number, month?: number, year?: number) => {
+    const targetMonth = month ?? calendarMonth;
+    const targetYear = year ?? calendarYear;
+    if (month !== undefined) setCalendarMonth(month);
+    if (year !== undefined) setCalendarYear(year);
+    setSelectedDate(day);
+
+    if (copiedEvent) {
+      const dateStr = `${targetYear}-${String(targetMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+      const newEvent = {
+        ...copiedEvent,
+        id: `${Date.now()}-copy`,
+        date: dateStr,
+        createdBy: user?.id || '',
+      };
+      StorageService.addEvent(newEvent);
+      setCopiedEvent(null);
+    }
   };
 
   // New event form state
@@ -184,14 +214,20 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
     }
   }, [user]);
 
-  // Filter events for the current user — coaches and club admins see all
+  // Filter events for the current user — scoped to their club/teams
   const allEvents = useMemo(() => {
-    const customTeamIds = (StorageService.getCustomTeams ? StorageService.getCustomTeams() : []).map((t: any) => t.id);
+    const customTeamsData = StorageService.getCustomTeams ? StorageService.getCustomTeams() : [];
+    const customTeamIds = customTeamsData.map((t: any) => t.id);
     const allMyTeamIds = [...(user?.teamIds || []), ...customTeamIds];
+    const userClubId = user?.clubId || MOCK_TEAMS.find(t => user?.teamIds?.includes(t.id))?.clubId || null;
+    const allTeamsData = [...MOCK_TEAMS, ...customTeamsData];
+    const clubTeamIds = userClubId
+      ? allTeamsData.filter(t => t.clubId === userClubId).map(t => t.id)
+      : [];
     const combined = [...MOCK_SCHEDULE, ...realEvents];
     return combined.filter(e =>
-      user?.role === 'club' ||
-      isCoach ||
+      (user?.role === 'club' && clubTeamIds.includes(e.teamId)) ||
+      (isCoach && allMyTeamIds.includes(e.teamId)) ||
       allMyTeamIds.includes(e.teamId) ||
       e.teamId === user?.linkedTeamId
     );
@@ -270,6 +306,7 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
               pinLocation: newEvent.pinLocation,
               teamId: tid,
               date: toLocalDateStr(cur),
+              createdBy: user?.id || '',
             });
             n++;
           }
@@ -283,6 +320,7 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
           id: `${Date.now()}-${tid}`,
           date: dateStr,
           teamId: tid,
+          createdBy: user?.id || '',
         });
       }
     }
@@ -299,25 +337,7 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
       setScheduleView('week');
     }
 
-    // Send announcement for each selected team
-    const allTeamsList = [...MOCK_TEAMS, ...(StorageService.getCustomTeams ? StorageService.getCustomTeams() : []), ...StorageService.getTeams()];
-    for (const tid of teamsToCreate) {
-      const team = allTeamsList.find((t: any) => t.id === tid);
-      if (user && team) {
-        const teamEvents = eventsToCreate.filter(e => e.teamId === tid);
-        const isRepeat = teamEvents.length > 1;
-        StorageService.addAnnouncement({
-          senderId: user.id,
-          senderName: user.name,
-          teamId: tid,
-          teamName: team.name,
-          title: `📅 New ${newEvent.type.charAt(0).toUpperCase() + newEvent.type.slice(1)}: ${newEvent.title}`,
-          content: isRepeat
-            ? `${newEvent.title} scheduled every ${newEvent.repeatDays.join(' & ')} (${teamEvents.length} sessions).${newEvent.location ? ` Location: ${newEvent.location}.` : ''}${newEvent.notes ? ` Note: ${newEvent.notes}` : ''}`
-            : `${newEvent.title} on ${teamEvents[0].date} at ${newEvent.time}.${newEvent.location ? ` Location: ${newEvent.location}.` : ''}${newEvent.notes ? ` Note: ${newEvent.notes}` : ''}`,
-        });
-      }
-    }
+
 
     setScheduleSuccess(true);
     setTimeout(() => {
@@ -543,8 +563,109 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
                     placeholder="e.g. Tactical Drill"
                     value={newEvent.title}
                     onChange={(e) => setNewEvent(prev => ({ ...prev, title: e.target.value }))}
-                    className="h-12 bg-slate-50 border-none rounded-2xl px-4 text-xs font-bold"
+                    className="h-14 bg-slate-50 border-none rounded-2xl px-4 text-sm font-bold text-slate-700"
                   />
+                </div>
+
+                {/* Date */}
+                <div className="space-y-2">
+                  <label className="text-[11px] font-black text-slate-900 uppercase italic tracking-[0.18em] px-1">Date</label>
+                  {(() => {
+                    const dpDaysInMonth = new Date(dpYear, dpMonth + 1, 0).getDate();
+                    const dpFirstDay = new Date(dpYear, dpMonth, 1).getDay();
+                    const dpMonthName = new Date(dpYear, dpMonth, 1).toLocaleDateString('en-US', { month: 'long' });
+                    const dpPrev = () => { if (dpMonth === 0) { setDpMonth(11); setDpYear(dpYear - 1); } else setDpMonth(dpMonth - 1); };
+                    const dpNext = () => { if (dpMonth === 11) { setDpMonth(0); setDpYear(dpYear + 1); } else setDpMonth(dpMonth + 1); };
+                    const isDpToday = (d: number) => d === today && dpMonth === currentMonth && dpYear === currentYear;
+                    const isDpSelected = (d: number) => d === selectedDate && dpMonth === calendarMonth && dpYear === calendarYear;
+
+                    return (
+                      <div className="relative">
+                        <button
+                          type="button"
+                          onClick={() => { setDpMonth(calendarMonth); setDpYear(calendarYear); setDatePickerOpen(!datePickerOpen); }}
+                          className="w-full h-14 bg-slate-50 rounded-2xl px-4 flex items-center justify-between text-left"
+                        >
+                          <span className="text-sm font-bold text-slate-700">
+                            {new Date(calendarYear, calendarMonth, selectedDate).toLocaleDateString('en-NZ', { weekday: 'short', day: 'numeric', month: 'long', year: 'numeric' })}
+                          </span>
+                          <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${datePickerOpen ? 'rotate-180' : ''}`} />
+                        </button>
+                        <AnimatePresence>
+                          {datePickerOpen && (
+                            <motion.div
+                              initial={{ opacity: 0, y: -8, scale: 0.97 }}
+                              animate={{ opacity: 1, y: 0, scale: 1 }}
+                              exit={{ opacity: 0, y: -8, scale: 0.97 }}
+                              transition={{ duration: 0.15 }}
+                              className="absolute left-0 right-0 top-[60px] z-30 bg-white rounded-2xl shadow-xl border border-slate-100 p-4 space-y-3"
+                            >
+                              {/* Month nav */}
+                              <div className="flex items-center justify-between">
+                                <button type="button" onClick={dpPrev} className="w-8 h-8 rounded-xl bg-slate-50 flex items-center justify-center hover:bg-slate-100 transition-colors">
+                                  <ChevronLeft className="w-4 h-4 text-slate-500" />
+                                </button>
+                                <span className="text-[12px] font-black text-slate-900 uppercase tracking-[0.15em]">{dpMonthName} {dpYear}</span>
+                                <button type="button" onClick={dpNext} className="w-8 h-8 rounded-xl bg-slate-50 flex items-center justify-center hover:bg-slate-100 transition-colors">
+                                  <ChevronRight className="w-4 h-4 text-slate-500" />
+                                </button>
+                              </div>
+                              {/* Day headers */}
+                              <div className="grid grid-cols-7 gap-1">
+                                {['M','T','W','T','F','S','S'].map((d, i) => (
+                                  <div key={i} className="text-center text-[9px] font-black text-slate-300 uppercase">{d}</div>
+                                ))}
+                              </div>
+                              {/* Days grid */}
+                              <div className="grid grid-cols-7 gap-1">
+                                {/* Offset for first day — shift Sunday(0) to end */}
+                                {Array.from({ length: (dpFirstDay + 6) % 7 }).map((_, i) => (
+                                  <div key={`empty-${i}`} />
+                                ))}
+                                {Array.from({ length: dpDaysInMonth }).map((_, i) => {
+                                  const day = i + 1;
+                                  return (
+                                    <button
+                                      key={day}
+                                      type="button"
+                                      onClick={() => {
+                                        setCalendarYear(dpYear);
+                                        setCalendarMonth(dpMonth);
+                                        setSelectedDate(day);
+                                        setDatePickerOpen(false);
+                                      }}
+                                      className={`w-full aspect-square rounded-xl text-[12px] font-bold transition-all flex items-center justify-center ${
+                                        isDpSelected(day)
+                                          ? 'bg-primary text-white shadow-md shadow-primary/30'
+                                          : isDpToday(day)
+                                            ? 'bg-primary/10 text-primary font-black'
+                                            : 'text-slate-600 hover:bg-slate-50'
+                                      }`}
+                                    >
+                                      {day}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                              {/* Today shortcut */}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setCalendarYear(currentYear);
+                                  setCalendarMonth(currentMonth);
+                                  setSelectedDate(today);
+                                  setDatePickerOpen(false);
+                                }}
+                                className="w-full py-2 text-[10px] font-black text-primary uppercase tracking-widest hover:bg-primary/5 rounded-xl transition-colors"
+                              >
+                                Today
+                              </button>
+                            </motion.div>
+                          )}
+                        </AnimatePresence>
+                      </div>
+                    );
+                  })()}
                 </div>
 
                 {/* Time */}
@@ -554,7 +675,7 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
                     placeholder="e.g. 6:00 PM"
                     value={newEvent.time}
                     onChange={(e) => setNewEvent(prev => ({ ...prev, time: e.target.value }))}
-                    className="h-12 bg-slate-50 border-none rounded-2xl px-4 text-xs font-bold"
+                    className="h-14 bg-slate-50 border-none rounded-2xl px-4 text-sm font-bold text-slate-700"
                   />
                 </div>
 
@@ -619,7 +740,7 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
                     placeholder="e.g. Field 3, Park Side (optional)"
                     value={newEvent.location}
                     onChange={(e) => setNewEvent(prev => ({ ...prev, location: e.target.value }))}
-                    className="h-12 bg-slate-50 border-none rounded-2xl px-4 text-xs font-bold"
+                    className="h-14 bg-slate-50 border-none rounded-2xl px-4 text-sm font-bold text-slate-700"
                   />
 
                   {isSearchingLocation && !newEvent.pinLocation && (
@@ -770,7 +891,7 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
                     placeholder="e.g. Wear home colors"
                     value={newEvent.notes}
                     onChange={(e) => setNewEvent(prev => ({ ...prev, notes: e.target.value }))}
-                    className="h-12 bg-slate-50 border-none rounded-2xl px-4 text-xs font-bold"
+                    className="h-14 bg-slate-50 border-none rounded-2xl px-4 text-sm font-bold text-slate-700"
                   />
                 </div>
               </div>
@@ -831,6 +952,46 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
               </div>
             </div>
 
+            {/* Copy event banner */}
+            <AnimatePresence>
+              {copiedEvent && (
+                <motion.div
+                  initial={{ opacity: 0, y: -10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  exit={{ opacity: 0, y: -10 }}
+                  className="mb-4 flex items-center justify-between bg-slate-900 rounded-2xl px-4 py-3 shadow-xl"
+                >
+                  <div className="flex items-center gap-2.5">
+                    <div className="w-8 h-8 rounded-xl bg-green-500/20 flex items-center justify-center">
+                      <Copy className="w-4 h-4 text-green-400" />
+                    </div>
+                    <div>
+                      <p className="text-[11px] font-black uppercase tracking-widest text-white">{copiedEvent.title}</p>
+                      <p className="text-[8px] font-bold uppercase tracking-widest text-slate-400">Click a day to paste • Esc to cancel</p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      onClick={() => {
+                        StorageService.deleteEvent(copiedEvent.id);
+                        setCopiedEvent(null);
+                      }}
+                      className="w-7 h-7 rounded-xl flex items-center justify-center text-red-400 hover:bg-red-500/20 transition-all"
+                      title="Delete event"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                    <button
+                      onClick={() => setCopiedEvent(null)}
+                      className="w-7 h-7 rounded-xl flex items-center justify-center text-slate-400 hover:bg-white/10 transition-all"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
+
             {scheduleView === 'month' ? (
               <>
                 <div className="grid grid-cols-7 gap-2 mb-3">
@@ -848,7 +1009,7 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
                     return (
                       <button
                         key={i}
-                        onClick={() => setSelectedDate(day)}
+                        onClick={() => handleDateClick(day)}
                         className={`aspect-square rounded-2xl flex flex-col items-center justify-center text-xs font-bold relative transition-all active:scale-90 ${
                           isSelected ? 'bg-primary text-white shadow-lg shadow-primary/30' : isToday ? 'bg-primary/10 text-primary' : 'bg-slate-50 text-slate-600 hover:bg-slate-100'
                         }`}
@@ -879,7 +1040,7 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
                     return (
                       <button
                         key={i}
-                        onClick={() => { setSelectedDate(wd.day); setCalendarMonth(wd.month); setCalendarYear(wd.year); }}
+                        onClick={() => handleDateClick(wd.day, wd.month, wd.year)}
                         className={`p-4 rounded-[2rem] text-left transition-all active:scale-95 border-2 ${isSelected ? 'bg-primary border-primary shadow-lg shadow-primary/20' : 'bg-slate-50 border-transparent'}`}
                       >
                         <div className="flex justify-between items-start mb-2">
@@ -922,7 +1083,7 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
                     return (
                       <button
                         key={i}
-                        onClick={() => { setSelectedDate(wd.day); setCalendarMonth(wd.month); setCalendarYear(wd.year); }}
+                        onClick={() => handleDateClick(wd.day, wd.month, wd.year)}
                         className={`p-3 rounded-[1.5rem] text-left transition-all active:scale-95 border-2 ${isSelected ? 'bg-primary border-primary shadow-lg shadow-primary/20' : 'bg-slate-50 border-transparent'}`}
                       >
                         <div className="flex justify-between items-start mb-2">
@@ -1028,7 +1189,7 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
                                   className="flex items-center gap-1 text-slate-400 hover:text-primary transition-colors"
                                 >
                                   <MapPin className="w-3 h-3" />
-                                  <span className="text-xs font-medium">{event.location}</span>
+                                  <span className="text-xs font-medium">{getShortLocation(event.pinLocation?.label || event.location)}</span>
                                 </button>
                               )}
                               {event.notes && <p className="text-[10px] text-slate-400 italic">Note: {event.notes}</p>}
@@ -1088,7 +1249,26 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
                                   View All
                                 </button>
                               </div>
-                              {realEvents.some((re: any) => re.id === event.id) && isCoach && (
+                              {/* Copy to another date */}
+                              {(isCoach || user?.role === 'club') && (
+                                <button
+                                  onClick={() => {
+                                    setCopiedEvent(event);
+                                    setCopyToastVisible(true);
+                                    setExpandedEventId(null);
+                                    setTimeout(() => setCopyToastVisible(false), 3000);
+                                  }}
+                                  className={`w-full h-10 rounded-2xl text-[9px] font-black uppercase tracking-widest transition-all active:scale-[0.98] flex items-center justify-center gap-1.5 ${
+                                    copiedEvent?.id === event.id
+                                      ? 'bg-primary text-white'
+                                      : 'border border-slate-200 bg-white text-slate-500 hover:bg-slate-50'
+                                  }`}
+                                >
+                                  <Copy className="w-3.5 h-3.5" />
+                                  {copiedEvent?.id === event.id ? 'Copied — Select a Date' : 'Copy to Another Date'}
+                                </button>
+                              )}
+                              {realEvents.some((re: any) => String(re.id) === String(event.id)) && (isCoach || user?.role === 'club' || event.createdBy === user?.id) && (
                                 confirmDeleteId === event.id ? (
                                   <div className="flex gap-2">
                                     <button

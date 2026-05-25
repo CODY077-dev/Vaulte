@@ -144,10 +144,10 @@ export default function Login({ onLogin }: LoginProps) {
                 <div className="relative">
                   <UserCircle className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                   <Input
-                    placeholder="FULL NAME"
+                    placeholder="Full name"
                     value={name}
                     onChange={(e) => setName(e.target.value)}
-                    className="pl-12 h-14 bg-white rounded-2xl border-slate-100 font-bold text-base placeholder:text-slate-300 uppercase tracking-widest focus:ring-primary/10"
+                    className="pl-12 h-14 bg-white rounded-2xl border-slate-100 font-medium text-base placeholder:text-slate-300 tracking-wide focus:ring-0 focus:outline-none"
                   />
                 </div>
                 
@@ -177,7 +177,7 @@ export default function Login({ onLogin }: LoginProps) {
               placeholder="Email address"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="pl-12 h-14 bg-white rounded-2xl border-slate-100 font-medium text-base placeholder:text-slate-300 tracking-wide focus:ring-primary/10"
+              className="pl-12 h-14 bg-white rounded-2xl border-slate-100 font-medium text-base placeholder:text-slate-300 tracking-wide focus:ring-0 focus:outline-none"
               required
             />
           </div>
@@ -189,7 +189,7 @@ export default function Login({ onLogin }: LoginProps) {
               placeholder="Password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="pl-12 h-14 bg-white rounded-2xl border-slate-100 font-medium text-base placeholder:text-slate-300 tracking-wide focus:ring-primary/10"
+              className="pl-12 h-14 bg-white rounded-2xl border-slate-100 font-medium text-base placeholder:text-slate-300 tracking-wide focus:ring-0 focus:outline-none"
               required
             />
           </div>

@@ -328,6 +328,20 @@ export default function App() {
       const updatedUser = { ...user, ...updates };
       setUser(updatedUser);
       localStorage.setItem("gameday_user", JSON.stringify(updatedUser));
+      StorageService.updateUserData(user.id, updatedUser);
+      // Sync critical fields to Firestore so they survive sign-out
+      const firestoreUpdates: Record<string, any> = {};
+      if (updates.teamIds) firestoreUpdates.teamIds = updates.teamIds;
+      if (updates.clubId) firestoreUpdates.clubId = updates.clubId;
+      if (updates.name) firestoreUpdates.name = updates.name;
+      if (updates.avatar) firestoreUpdates.avatar = updates.avatar;
+      if (updates.role) firestoreUpdates.role = updates.role;
+      if (updates.roles) firestoreUpdates.roles = updates.roles;
+      if (Object.keys(firestoreUpdates).length > 0) {
+        setDoc(doc(db, 'users', user.id), firestoreUpdates, { merge: true })
+          .then(() => console.log('Firestore user sync OK:', firestoreUpdates))
+          .catch(e => console.warn('Firestore user sync failed:', e));
+      }
     }
   };
 

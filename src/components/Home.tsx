@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Sparkles, Calendar, Users, Trophy, Activity, Clock, MapPin, AlertCircle, Send, Megaphone, UserX, ChevronDown, Check, ChevronLeft, ChevronRight, User as UserIcon, FileText, CheckCircle2, Bell, Navigation, X, Search, Pencil, Trash2, MessageSquare } from "lucide-react";
+import { Sparkles, Calendar, Users, Trophy, Activity, Clock, MapPin, AlertCircle, Send, Megaphone, UserX, ChevronDown, Check, ChevronLeft, ChevronRight, User as UserIcon, FileText, CheckCircle2, Bell, Navigation, X, Search, Pencil, Trash2, MessageSquare, PartyPopper } from "lucide-react";
 import DefaultAvatar from "./DefaultAvatar";
 import { Card, CardContent } from "./ui/card";
 import { Badge } from "./ui/badge";
@@ -150,11 +150,12 @@ export default function Home({ user, onTabChange }: HomeProps) {
 
       const announcements = StorageService.getAnnouncements();
       const filtered = announcements.filter(a =>
-        a.teamId === 'all' ||
+        (a.teamId === 'all' && userClubId && a.clubId === userClubId) ||
         (userClubId && a.teamId === userClubId) ||
         user?.teamIds?.includes(a.teamId) ||
         a.teamId === user?.linkedTeamId ||
-        (user?.role === 'club' && clubTeamIds.includes(a.teamId))
+        (user?.role === 'club' && clubTeamIds.includes(a.teamId)) ||
+        a.senderId === user?.id
       );
       setRealAnnouncements(filtered);
 
@@ -232,8 +233,9 @@ export default function Home({ user, onTabChange }: HomeProps) {
     return realAnnouncements
       .filter(ann => {
         // Visibility filter — only show announcements for this user's teams
+        const userClubId = user?.clubId || MOCK_TEAMS.find(t => user?.teamIds?.includes(t.id))?.clubId || null;
         const visible =
-          ann.teamId === 'all' ||
+          (ann.teamId === 'all' && userClubId && ann.clubId === userClubId) ||
           user?.teamIds?.includes(ann.teamId) ||
           user?.role === 'club' ||
           ann.senderId === user?.id;
@@ -293,9 +295,14 @@ export default function Home({ user, onTabChange }: HomeProps) {
   
   const allEvents = useMemo(() => {
     const allMyTeamIds = [...(user?.teamIds || [])];
+    const userClubId = user?.clubId || MOCK_TEAMS.find(t => user?.teamIds?.includes(t.id))?.clubId || null;
+    const allTeamsData = [...MOCK_TEAMS, ...StorageService.getCustomTeams()];
+    const clubTeamIds = userClubId
+      ? allTeamsData.filter(t => t.clubId === userClubId).map(t => t.id)
+      : [];
     const combined = [...MOCK_SCHEDULE, ...realEvents];
     return combined.filter(e =>
-      user?.role === 'club' ||
+      (user?.role === 'club' && clubTeamIds.includes(e.teamId)) ||
       allMyTeamIds.includes(e.teamId) ||
       e.teamId === user?.linkedTeamId
     );
@@ -498,7 +505,7 @@ export default function Home({ user, onTabChange }: HomeProps) {
                         ? { bg: 'rgba(245,158,11,0.12)', fg: '#fbbf24', label: 'Training', Icon: Activity }
                         : event.type === 'meeting'
                           ? { bg: 'rgba(255,255,255,0.06)', fg: 'rgba(255,255,255,0.7)', label: 'Meeting', Icon: Users }
-                          : { bg: 'rgba(255,255,255,0.06)', fg: 'rgba(255,255,255,0.7)', label: event.type || 'Event', Icon: Calendar };
+                          : { bg: 'rgba(168,85,247,0.15)', fg: '#a855f7', label: event.type || 'Event', Icon: PartyPopper };
 
                     const attendanceRecords = allRealAttendance[event.id] || [];
                     const goingCount = attendanceRecords.filter(a => a.status === 'going').length;
@@ -639,21 +646,76 @@ export default function Home({ user, onTabChange }: HomeProps) {
 
         {/* Quick actions */}
         {isCoach || user?.role === 'club' ? (
-          <div className="grid grid-cols-3 gap-2 px-4">
-            {[
-              { label: 'Broadcast', Icon: Megaphone, filled: true, action: () => setIsBroadcastOpen(!isBroadcastOpen) },
-              { label: 'My Teams', Icon: Users, filled: false, action: () => onTabChange('teams') },
-              { label: 'Add Event', Icon: Sparkles, filled: false, action: () => { localStorage.setItem('gameday_open_create_event', '1'); onTabChange('schedule'); } },
-            ].map((q, i) => (
-              <button key={i} onClick={q.action}
-                className="bg-white rounded-2xl p-3 flex flex-col items-center gap-1.5 active:scale-95 transition-transform shadow-sm border border-slate-100">
-                <div className={`w-9 h-9 rounded-xl flex items-center justify-center ${q.filled ? 'bg-primary text-white' : 'bg-primary/10 text-primary'}`}>
-                  <q.Icon className="w-4 h-4" />
+          (() => {
+            const now = new Date();
+            const startOfWeek = new Date(now);
+            startOfWeek.setDate(now.getDate() - now.getDay() + 1);
+            startOfWeek.setHours(0, 0, 0, 0);
+            const endOfWeek = new Date(startOfWeek);
+            endOfWeek.setDate(startOfWeek.getDate() + 6);
+            endOfWeek.setHours(23, 59, 59, 999);
+
+            const weekEventsCoach = allEvents.filter(e => {
+              const d = parseEventDate(e.date);
+              return d >= startOfWeek && d <= endOfWeek;
+            });
+
+            let goingCountCoach = 0;
+            let absentCountCoach = 0;
+            let noResponseCountCoach = 0;
+            weekEventsCoach.forEach(e => {
+              const records = allRealAttendance[e.id] || [];
+              records.forEach(r => {
+                if (r.status === 'going') goingCountCoach++;
+                else if (r.status === 'absent') absentCountCoach++;
+              });
+              // Count team members who haven't responded
+              const teamId = e.teamId || user?.teamIds?.[0];
+              const team = squadTeams.find((t: any) => t.id === teamId);
+              const memberCount = team ? (StorageService.getTeamMembers(team.id)?.length || 0) : 0;
+              const respondedCount = records.length;
+              noResponseCountCoach += Math.max(0, memberCount - respondedCount);
+            });
+
+            return (
+              <div className="space-y-2 px-4">
+                <div className="grid grid-cols-3 gap-2">
+                  <button onClick={() => setIsBroadcastOpen(!isBroadcastOpen)}
+                    className="bg-white rounded-2xl p-3 flex flex-col items-center gap-1.5 active:scale-95 transition-transform shadow-sm border border-slate-100">
+                    <div className="w-9 h-9 rounded-xl flex items-center justify-center bg-primary text-white">
+                      <Megaphone className="w-4 h-4" />
+                    </div>
+                    <span className="text-[9px] font-black italic text-slate-700 uppercase tracking-[0.14em]">Broadcast</span>
+                  </button>
+                  {/* Weekly attendance card */}
+                  <div className="bg-white rounded-2xl shadow-sm border border-slate-100 px-2 py-2 flex flex-col items-center justify-center">
+                    <h3 className="text-[9px] font-black text-slate-700 uppercase italic tracking-[0.14em] mb-1.5">This Week</h3>
+                    <div className="flex items-center gap-1.5 w-full">
+                      <div className="flex flex-col items-center flex-1 bg-emerald-50 rounded-md py-1">
+                        <span className="text-[14px] font-semibold text-emerald-600 leading-none">{goingCountCoach}</span>
+                        <span className="text-[5px] font-black text-emerald-600 uppercase tracking-wider">Going</span>
+                      </div>
+                      <div className="flex flex-col items-center flex-1 bg-red-50 rounded-md py-1">
+                        <span className="text-[14px] font-semibold text-red-500 leading-none">{absentCountCoach}</span>
+                        <span className="text-[5px] font-black text-red-500 uppercase tracking-wider">Out</span>
+                      </div>
+                      <div className="flex flex-col items-center flex-1 bg-slate-100 rounded-md py-1">
+                        <span className="text-[14px] font-semibold text-slate-500 leading-none">{noResponseCountCoach}</span>
+                        <span className="text-[5px] font-black text-slate-500 uppercase tracking-wider">TBD</span>
+                      </div>
+                    </div>
+                  </div>
+                  <button onClick={() => { localStorage.setItem('gameday_open_create_event', '1'); onTabChange('schedule'); }}
+                    className="bg-white rounded-2xl p-3 flex flex-col items-center gap-1.5 active:scale-95 transition-transform shadow-sm border border-slate-100">
+                    <div className="w-9 h-9 rounded-xl flex items-center justify-center bg-primary/10 text-primary">
+                      <Sparkles className="w-4 h-4" />
+                    </div>
+                    <span className="text-[9px] font-black italic text-slate-700 uppercase tracking-[0.14em]">Add Event</span>
+                  </button>
                 </div>
-                <span className="text-[9px] font-black italic text-slate-700 uppercase tracking-[0.14em]">{q.label}</span>
-              </button>
-            ))}
-          </div>
+              </div>
+            );
+          })()
         ) : (
           (() => {
             // Calculate this week's attendance stats for the player
@@ -801,10 +863,18 @@ export default function Home({ user, onTabChange }: HomeProps) {
                         )}
                         {/* Show first 3 only */}
                         {visible.map((ann) => (
-                          <div key={ann.id} className={`bg-white rounded-2xl overflow-hidden ${ann.isUrgent ? 'border-2 border-red-400 border-l-[4px] border-l-red-500' : 'border border-primary/30 border-l-[3px] border-l-primary'}`}>
+                          <div key={ann.id} className={`bg-white rounded-2xl overflow-hidden relative ${ann.isUrgent ? 'border-2 border-red-400 border-l-[4px] border-l-red-500' : 'border border-primary/30 border-l-[3px] border-l-primary'}`}>
+                            {user?.id === ann.senderId && (
+                              <button
+                                onClick={() => setConfirmDeleteId(ann.id)}
+                                className="absolute top-2 right-2 z-10 w-5 h-5 rounded-full flex items-center justify-center text-slate-300 hover:text-red-400 transition-all active:scale-95"
+                              >
+                                <span className="text-[14px] font-bold leading-none mb-[1px]">−</span>
+                              </button>
+                            )}
                             <div className={`flex-1 relative ${ann.isUrgent ? 'py-3.5 px-4' : 'py-2.5 px-4'}`}>
                               {ann.isUrgent && (
-                                <span className="absolute top-3 right-3 bg-red-50 text-red-500 text-[8px] font-black uppercase tracking-widest px-2.5 py-1 rounded-full border border-red-100">Urgent</span>
+                                <span className={`absolute top-3 ${user?.id === ann.senderId ? 'right-8' : 'right-3'} bg-red-50 text-red-500 text-[8px] font-black uppercase tracking-widest px-2.5 py-1 rounded-full border border-red-100`}>Urgent</span>
                               )}
                               <div className="flex items-center gap-1.5 mb-1">
                                 {ann.isUrgent && (
@@ -819,11 +889,11 @@ export default function Home({ user, onTabChange }: HomeProps) {
                                 )}
                                 <div className="mb-1">
                                   <p className={`text-[8px] font-black uppercase tracking-widest mb-0.5 ${ann.isUrgent ? 'text-red-400' : 'text-primary'}`}>{ann.teamName}</p>
-                                  <p className={`font-black uppercase text-slate-900 ${ann.isUrgent ? 'text-[12px]' : 'text-[11px]'}`}>{ann.title}</p>
+                                  <p className={`font-black uppercase text-slate-900 ${ann.isUrgent ? 'text-[14px]' : 'text-[13px]'}`}>{ann.title}</p>
                                 </div>
                               </div>
-                              <p className={`text-slate-600 leading-relaxed mb-1.5 ${ann.isUrgent ? 'text-[12px]' : 'text-[11px]'}`}>{ann.content}</p>
-                              
+                              <p className={`text-slate-600 leading-snug mb-1 -mt-0.5 ${ann.isUrgent ? 'text-[14px]' : 'text-[13px]'}`}>{ann.content}</p>
+
                               {ann.type === 'attendance_reminder' && ann.eventId && (
                                 <div className="mb-3">
                                   {attendance[ann.eventId]?.status ? (
@@ -862,19 +932,9 @@ export default function Home({ user, onTabChange }: HomeProps) {
                                 <p className={`text-[8px] font-bold uppercase tracking-widest ${ann.isUrgent ? 'text-red-400' : 'text-slate-400'}`}>
                                   — Sent by {ann.senderName}
                                 </p>
-                                <div className="flex items-center gap-2">
-                                  {user?.id === ann.senderId && (
-                                    <button
-                                      onClick={() => setConfirmDeleteId(ann.id)}
-                                      className="w-5 h-5 rounded-full bg-slate-100 hover:bg-red-50 flex items-center justify-center text-slate-400 hover:text-red-400 transition-all active:scale-95"
-                                    >
-                                      <span className="text-[14px] font-bold leading-none mb-[1px]">−</span>
-                                    </button>
-                                  )}
-                                  <p className={`text-[9px] font-bold ${ann.isUrgent ? 'text-red-400' : 'text-slate-400'}`}>
-                                    {formatAnnouncementDate(ann.timestamp)}
-                                  </p>
-                                </div>
+                                <p className={`text-[9px] font-bold ${ann.isUrgent ? 'text-red-400' : 'text-slate-400'}`}>
+                                  {formatAnnouncementDate(ann.timestamp)}
+                                </p>
                               </div>
                             </div>
                           </div>
@@ -1590,10 +1650,10 @@ export default function Home({ user, onTabChange }: HomeProps) {
                         )}
                         <div className="mb-1">
                           <p className={`text-[8px] font-black uppercase tracking-widest mb-0.5 ${ann.isUrgent ? 'text-red-400' : 'text-primary'}`}>{ann.teamName}</p>
-                          <p className={`font-black uppercase text-slate-900 ${ann.isUrgent ? 'text-[12px]' : 'text-[11px]'}`}>{ann.title}</p>
+                          <p className={`font-black uppercase text-slate-900 ${ann.isUrgent ? 'text-[14px]' : 'text-[13px]'}`}>{ann.title}</p>
                         </div>
                       </div>
-                      <p className={`text-slate-600 leading-relaxed mb-1.5 ${ann.isUrgent ? 'text-[12px]' : 'text-[11px]'}`}>{ann.content}</p>
+                      <p className={`text-slate-600 leading-snug mb-1 -mt-0.5 ${ann.isUrgent ? 'text-[14px]' : 'text-[13px]'}`}>{ann.content}</p>
                       
                       {ann.type === 'attendance_reminder' && ann.eventId && (
                         <div className="mb-3">

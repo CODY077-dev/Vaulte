@@ -290,6 +290,11 @@ const MOCK_COMPETITION_DETAILS = {
 
 type ViewType = "my-games" | "favourites" | "sport";
 
+const getShortLocation = (location: string | undefined): string => {
+  if (!location) return '';
+  return location.split(',')[0].trim();
+};
+
 interface GamesProps {
   user: User | null;
 }
@@ -304,7 +309,7 @@ export default function Games({ user }: GamesProps) {
   const [teamLogos, setTeamLogos] = useState<Record<string, string>>({});
   const [teamNames, setTeamNames] = useState<Record<string, string>>({});
   const [activeView, setActiveView] = useState<ViewType>("my-games");
-  const [gameFilter, setGameFilter] = useState<"upcoming" | "today" | "finished">("upcoming");
+  const [gameFilter, setGameFilter] = useState<"upcoming" | "today" | "finished">("today");
   const [expandedDates, setExpandedDates] = useState<Set<string>>(new Set());
   const [pendingDeleteGameId, setPendingDeleteGameId] = useState<string | null>(null);
   const [isEditMode, setIsEditMode] = useState(false);
@@ -486,6 +491,7 @@ export default function Games({ user }: GamesProps) {
 
     // Map custom events (club events like "End of Season Awards") — show all
     const myEvents = realCustomEvents
+      .filter((e: any) => allMyTeamIds.includes(e.teamId))
       .map((e: any) => {
         const eventDate = parseStoredDate(e.date);
         const isPast = eventDate < now;
@@ -654,7 +660,7 @@ export default function Games({ user }: GamesProps) {
                 className="flex items-center gap-1 text-primary active:scale-[0.98] transition-all"
               >
                 <MapPin className="w-2.5 h-2.5" />
-                {game.location}
+                {getShortLocation(game.location)}
               </button>
             ) : null}
           </div>
@@ -730,7 +736,7 @@ export default function Games({ user }: GamesProps) {
                   className="flex items-center gap-1 text-white/70 active:scale-[0.98] transition-all"
                 >
                   <MapPin className="w-2.5 h-2.5" />
-                  {event.location}
+                  {getShortLocation(event.location)}
                 </button>
               ) : null}
             </div>
@@ -754,68 +760,7 @@ export default function Games({ user }: GamesProps) {
 
     return (
       <div className="flex flex-col">
-        {/* Live game hero card */}
-        {todayGame && gameFilter === 'today' && (
-          <div
-            className="rounded-[28px] overflow-hidden relative p-5 text-white mx-4 mb-4 cursor-pointer active:scale-[0.99] transition-all"
-            style={{ background: 'linear-gradient(135deg, #0c1320, #0f172a)' }}
-            onClick={() => setSelectedGame(todayGame as any)}
-          >
-            <div className="absolute -top-6 -right-6 w-32 h-32 rounded-full opacity-30 blur-2xl" style={{ background: 'oklch(0.55 0.21 35)' }} />
-            <div className="relative">
-              <div className="flex items-center gap-2 mb-4">
-                <span className="inline-flex items-center gap-1.5 text-[9px] font-black uppercase tracking-[0.2em] text-emerald-400">
-                  <span className="relative flex w-2 h-2">
-                    <span className="absolute inset-0 rounded-full bg-emerald-400 animate-ping opacity-75" />
-                    <span className="relative rounded-full w-2 h-2 bg-emerald-500" />
-                  </span>
-                  Today
-                </span>
-                {todayGame.league && (
-                  <span className="text-[9px] font-bold text-white/40 uppercase tracking-[0.12em] px-2 py-0.5 rounded-full border border-white/15">{todayGame.league}</span>
-                )}
-              </div>
-              <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
-                <div className="flex flex-col items-center">
-                  <div className="w-[52px] h-[52px] rounded-full bg-white/10 overflow-hidden flex items-center justify-center">
-                    {(todayGame.homeTeamId && teamLogos[todayGame.homeTeamId]) || todayGame.homeLogo
-                      ? <img src={(todayGame.homeTeamId && teamLogos[todayGame.homeTeamId]) || todayGame.homeLogo || ''} alt={todayGame.homeTeam} className="w-full h-full object-contain p-1" />
-                      : <span className="text-[16px] font-black text-white/60">{initials(todayGame.homeTeam)}</span>
-                    }
-                  </div>
-                  <p className="text-[11px] font-black uppercase tracking-tight mt-2 text-center">{todayGame.homeTeam}</p>
-                </div>
-                <div className="text-center">
-                  {(todayGame as any).score ? (
-                    <>
-                      <p className="text-[40px] font-black tracking-tight leading-none tabular-nums">
-                        {(todayGame as any).score.home}<span className="text-white/30 mx-1">·</span>{(todayGame as any).score.away}
-                      </p>
-                    </>
-                  ) : (
-                    <p className="text-[20px] font-black text-white/40 uppercase">vs</p>
-                  )}
-                </div>
-                <div className="flex flex-col items-center">
-                  <div className="w-[52px] h-[52px] rounded-full bg-white/10 overflow-hidden flex items-center justify-center">
-                    <span className="text-[16px] font-black text-white/60">{initials(todayGame.awayTeam)}</span>
-                  </div>
-                  <p className="text-[11px] font-black uppercase tracking-tight mt-2 text-center">{todayGame.awayTeam}</p>
-                </div>
-              </div>
-              <div className="mt-4 pt-4 border-t border-white/10 flex items-center justify-between">
-                <span className="text-[9px] font-bold text-white/50 uppercase tracking-[0.18em] flex items-center gap-1.5">
-                  <MapPin className="w-2.5 h-2.5" />{todayGame.location || 'TBC'}
-                </span>
-                <span className="text-[9px] font-black uppercase tracking-[0.2em] text-white flex items-center gap-1">
-                  Open <ChevronRight className="w-3 h-3" />
-                </span>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {sortedDates.length === 0 && !todayGame ? (
+        {sortedDates.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-16 px-8">
             <p className="text-[11px] font-black text-slate-900 uppercase tracking-widest mb-1">
               No Games
@@ -955,7 +900,7 @@ export default function Games({ user }: GamesProps) {
             </div>
             <div>
               <p className="text-[8px] font-bold text-slate-400 uppercase tracking-widest">Location</p>
-              <p className="text-[10px] font-black text-slate-900 uppercase">{game.location}</p>
+              <p className="text-[10px] font-black text-slate-900 uppercase">{getShortLocation(game.location)}</p>
               {((game as any).pinLocation || game.location) && (
                 <span className="text-[7px] font-bold text-primary uppercase tracking-widest mt-0.5 block">Tap for map</span>
               )}
@@ -1108,7 +1053,7 @@ export default function Games({ user }: GamesProps) {
                     >
                       <MapPin className="w-3 h-3" />
                       <div className="flex flex-col text-left">
-                        <span className="text-[9px] font-bold uppercase tracking-widest">{(game as any).location}</span>
+                        <span className="text-[9px] font-bold uppercase tracking-widest">{getShortLocation((game as any).location)}</span>
                         {((game as any).pinLocation || (game as any).location) && (
                           <span className="text-[6px] font-bold text-primary uppercase tracking-widest block">Tap for map</span>
                         )}
@@ -1207,7 +1152,7 @@ export default function Games({ user }: GamesProps) {
                     >
                       <MapPin className="w-2.5 h-2.5" />
                       <div className="flex flex-col text-left">
-                        <span className="truncate max-w-[50px]">{game.location}</span>
+                        <span className="truncate max-w-[50px]">{getShortLocation(game.location)}</span>
                         {(game as any).pinLocation || game.location && (
                           <span className="text-[6px] font-bold text-primary uppercase tracking-widest block">Tap for map</span>
                         )}
@@ -1448,7 +1393,7 @@ export default function Games({ user }: GamesProps) {
         {/* Filter tabs — pill bar */}
         {activeView === "my-games" && (
           <div className="flex gap-1 bg-white rounded-full p-1 shadow-sm">
-            {(['upcoming', 'today', 'finished'] as const).map((tab) => (
+            {(['today', 'upcoming', 'finished'] as const).map((tab) => (
               <button
                 key={tab}
                 onClick={() => setGameFilter(tab)}

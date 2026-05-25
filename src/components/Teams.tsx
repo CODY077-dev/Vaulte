@@ -2979,6 +2979,7 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                             teamId: teamNewEvent.teamId,
                             teamName: selectedTeam?.name || '',
                             date: toDateStr(cur),
+                            createdBy: user?.id || '',
                           });
                           n++;
                         }
@@ -2998,6 +2999,7 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                         teamName: selectedTeam?.name || '',
                         date: eventDate,
                         opponent: teamNewEvent.title,
+                        createdBy: user?.id || '',
                       });
                     }
                     eventsToCreate.forEach(e =>

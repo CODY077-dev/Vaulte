@@ -61,8 +61,10 @@ export default function SupporterHome({ user, onTabChange }: SupporterHomeProps)
   useEffect(() => {
     const loadData = () => {
       const allAnnouncements = StorageService.getAnnouncements();
-      const filteredAnnouncements = allAnnouncements.filter(a => 
-        a.teamId === user?.linkedTeamId || a.teamId === 'all'
+      const userClubId = user?.clubId || null;
+      const filteredAnnouncements = allAnnouncements.filter(a =>
+        a.teamId === user?.linkedTeamId ||
+        (a.teamId === 'all' && userClubId && a.clubId === userClubId)
       );
       setAnnouncements(filteredAnnouncements);
 
