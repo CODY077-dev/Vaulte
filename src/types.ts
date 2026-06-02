@@ -1,5 +1,12 @@
 export type UserRole = "supporter" | "coach" | "player" | "manager" | "club";
 
+export interface EmergencyContact {
+  firstName?: string;
+  lastName?: string;
+  email?: string;
+  phone?: string;
+}
+
 export interface User {
   id: string;
   name: string;
@@ -9,6 +16,7 @@ export interface User {
   email?: string;
   phone?: string;
   position?: string;
+  emergencyContact?: EmergencyContact;
   teamIds: string[];
   clubId?: string;
   linkedPlayerName?: string;

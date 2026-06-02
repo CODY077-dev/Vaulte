@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Sparkles, Calendar, Users, Trophy, Activity, Clock, MapPin, AlertCircle, Send, Megaphone, UserX, ChevronDown, Check, ChevronLeft, ChevronRight, User as UserIcon, FileText, CheckCircle2, Bell, Navigation, X, Search, Pencil, Trash2, MessageSquare, PartyPopper } from "lucide-react";
+import { Sparkles, Calendar, Users, Trophy, Activity, Clock, MapPin, AlertCircle, Send, Megaphone, UserX, ChevronDown, Check, ChevronLeft, ChevronRight, User as UserIcon, FileText, CheckCircle2, Bell, Navigation, X, Search, Pencil, Trash2, MessageSquare, PartyPopper, Plus, UserMinus } from "lucide-react";
 import DefaultAvatar from "./DefaultAvatar";
 import { Card, CardContent } from "./ui/card";
 import { Badge } from "./ui/badge";
@@ -18,6 +18,8 @@ import {
 import { MOCK_TEAMS, MOCK_SCHEDULE } from "../constants";
 import { User } from "../types";
 import StorageService, { Announcement, AttendanceRecord } from "../services/StorageService";
+import { openExternal } from "../utils/openExternal";
+import { canSend, recordSend, trimMessage, MAX_MESSAGE_LENGTH } from "../utils/rateLimiter";
 
 interface DashboardSummary {
   lineupHighlight: string;
@@ -27,22 +29,25 @@ interface DashboardSummary {
 
 const getShortLocation = (location: string | undefined): string => {
   if (!location) return '';
-  // Take only the part before the first comma to avoid long addresses
   const beforeComma = location.split(',')[0].trim();
+  const words = beforeComma.split(/\s+/);
+  if (words.length > 2) return words.slice(0, 2).join(' ');
   return beforeComma;
 };
 
 interface HomeProps {
   user: User | null;
   onTabChange: (tab: string, viewId?: string) => void;
+  onUpdateUser?: (updates: Partial<User>) => void;
 }
 
-export default function Home({ user, onTabChange }: HomeProps) {
+export default function Home({ user, onTabChange, onUpdateUser }: HomeProps) {
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [broadcastText, setBroadcastText] = useState("");
   const [broadcastTitle, setBroadcastTitle] = useState("");
   const [isBroadcastOpen, setIsBroadcastOpen] = useState(false);
+  const [broadcastRateLimitMsg, setBroadcastRateLimitMsg] = useState<string | null>(null);
   const [selectedTeamIds, setSelectedTeamIds] = useState<string[]>([]);
   const [selectedPlayerIds, setSelectedPlayerIds] = useState<string[]>([]);
   const [showTeamsPicker, setShowTeamsPicker] = useState(false);
@@ -54,6 +59,7 @@ export default function Home({ user, onTabChange }: HomeProps) {
   const [isAbsenceDialogOpen, setIsAbsenceDialogOpen] = useState(false);
   const [absenceReason, setAbsenceReason] = useState("");
   const [pendingEventId, setPendingEventId] = useState<string | null>(null);
+  const [pendingTeamId, setPendingTeamId] = useState<string | null>(null);
   const [expandedEventId, setExpandedEventId] = useState<string | null>(null);
   const [reminderSentEventId, setReminderSentEventId] = useState<string | null>(null);
   const [locationModalEvent, setLocationModalEvent] = useState<any>(null);
@@ -79,6 +85,14 @@ export default function Home({ user, onTabChange }: HomeProps) {
   const [logoErrors, setLogoErrors] = useState<Record<string, boolean>>({});
   const [pendingAnnouncementId, setPendingAnnouncementId] = useState<string | null>(null);
   const [updateTrigger, setUpdateTrigger] = useState(0);
+
+  // Child detail modal state
+  const [selectedChild, setSelectedChild] = useState<any>(null);
+  const [childJoinStep, setChildJoinStep] = useState<'view' | 'join' | 'success'>('view');
+  const [childJoinCode, setChildJoinCode] = useState('');
+  const [showConfirmRemoveChild, setShowConfirmRemoveChild] = useState(false);
+  const [childJoinError, setChildJoinError] = useState('');
+  const [childJoinedTeamName, setChildJoinedTeamName] = useState('');
 
   // Read fresh teamIds from localStorage so we pick up newly created teams
   // even before App.tsx re-renders with updated user prop
@@ -155,7 +169,8 @@ export default function Home({ user, onTabChange }: HomeProps) {
         user?.teamIds?.includes(a.teamId) ||
         a.teamId === user?.linkedTeamId ||
         (user?.role === 'club' && clubTeamIds.includes(a.teamId)) ||
-        a.senderId === user?.id
+        a.senderId === user?.id ||
+        (a.teamId === 'direct' && a.recipientId === user?.id)
       );
       setRealAnnouncements(filtered);
 
@@ -166,12 +181,24 @@ export default function Home({ user, onTabChange }: HomeProps) {
       setRealEvents(events);
       
       const formattedAttendance: Record<string, { status: 'going' | 'absent' | null, reason?: string } | undefined> = {};
-      
-      // Map existing attendance for this user if available
+
+      // Collect all child IDs linked to this user so we can show their attendance too
+      const allChildren = JSON.parse(localStorage.getItem('gameday_children') || '[]');
+      const myChildIds = allChildren
+        .filter((c: any) => c.parentIds?.includes(user?.id))
+        .map((c: any) => c.id);
+
+      // Map existing attendance for this user or their linked children
       Object.keys(allAttendance).forEach(eventId => {
         const userRecord = allAttendance[eventId].find(a => a.userId === user?.id);
         if (userRecord) {
           formattedAttendance[eventId] = { status: userRecord.status, reason: userRecord.reason };
+        } else if (myChildIds.length > 0) {
+          // Check if any of the user's children have an attendance record
+          const childRecord = allAttendance[eventId].find(a => myChildIds.includes(a.userId));
+          if (childRecord) {
+            formattedAttendance[eventId] = { status: childRecord.status, reason: childRecord.reason };
+          }
         }
       });
       setAttendance(formattedAttendance);
@@ -238,19 +265,25 @@ export default function Home({ user, onTabChange }: HomeProps) {
           (ann.teamId === 'all' && userClubId && ann.clubId === userClubId) ||
           user?.teamIds?.includes(ann.teamId) ||
           user?.role === 'club' ||
-          ann.senderId === user?.id;
+          ann.senderId === user?.id ||
+          (ann.teamId === 'direct' && ann.recipientId === user?.id);
         if (!visible) return false;
 
-        // Hide reminder announcements if the user has already responded
-        if (ann.isReminder && ann.eventId) {
+        // Hide reminder/attendance announcements if the user has already responded
+        if ((ann.isReminder || ann.type === 'attendance_reminder') && ann.eventId) {
           const records = allAttendance[ann.eventId] || [];
           const myRecord = records.find((r: any) => r.userId === user?.id);
           if (myRecord?.status === 'going' || myRecord?.status === 'absent') return false;
+          // Also check child records
+          const allChildrenForFilter = JSON.parse(localStorage.getItem('gameday_children') || '[]');
+          const myChildIdsForFilter = allChildrenForFilter.filter((c: any) => c.parentIds?.includes(user?.id)).map((c: any) => c.id);
+          const childRecord = records.find((r: any) => myChildIdsForFilter.includes(r.userId));
+          if (childRecord?.status === 'going' || childRecord?.status === 'absent') return false;
         }
 
         return true;
       });
-  }, [realAnnouncements, user]);
+  }, [realAnnouncements, user, attendance]);
 
   const totalAnnouncementsCount = sortedRealAnnouncements.filter(ann => !dismissedAnnouncementIds.has(ann.id)).length;
 
@@ -321,24 +354,54 @@ export default function Home({ user, onTabChange }: HomeProps) {
       .sort((a, b) => {
         const toMinutes = (t: string) => {
           if (!t) return 9999;
-          const match = t.match(/(\d+):(\d+)\s*(AM|PM)/i);
-          if (!match) return 9999;
-          let h = parseInt(match[1]);
-          const m = parseInt(match[2]);
-          const ampm = match[3].toUpperCase();
-          if (ampm === 'PM' && h !== 12) h += 12;
-          if (ampm === 'AM' && h === 12) h = 0;
-          return h * 60 + m;
+          // Try 12-hour format first (e.g. "6:00 PM")
+          const match12 = t.match(/(\d+):(\d+)\s*(AM|PM)/i);
+          if (match12) {
+            let h = parseInt(match12[1]);
+            const m = parseInt(match12[2]);
+            const ampm = match12[3].toUpperCase();
+            if (ampm === 'PM' && h !== 12) h += 12;
+            if (ampm === 'AM' && h === 12) h = 0;
+            return h * 60 + m;
+          }
+          // Try 24-hour format (e.g. "18:00")
+          const match24 = t.match(/(\d+):(\d+)/);
+          if (match24) {
+            return parseInt(match24[1]) * 60 + parseInt(match24[2]);
+          }
+          return 9999;
         };
         return toMinutes(a.time) - toMinutes(b.time);
       });
   }, [allEvents, selectedDate]);
 
 
-  const handleAttendance = (eventId: string, status: 'going' | 'absent', announcementId?: string) => {
+  // Resolve who should be recorded for attendance: if user is only a "parent" on this team,
+  // record the child's profile instead of the parent's
+  const resolveAttendee = (teamId?: string): { id: string; name: string } => {
+    if (!user) return { id: '', name: '' };
+    if (teamId) {
+      const role = localStorage.getItem(`gameday_role_${user.id}_${teamId}`);
+      if (role === 'parent') {
+        const childId = localStorage.getItem(`gameday_child_${user.id}_${teamId}`);
+        if (childId) {
+          const children = JSON.parse(localStorage.getItem('gameday_children') || '[]');
+          const child = children.find((c: any) => c.id === childId);
+          if (child) return { id: child.id, name: child.name };
+        }
+      }
+    }
+    // Use stored profile name if user.name looks like a Firebase UID
+    const storedProfile = StorageService.getUserData(user.id);
+    const name = storedProfile?.name || user.name;
+    return { id: user.id, name };
+  };
+
+  const handleAttendance = (eventId: string, status: 'going' | 'absent', announcementId?: string, teamId?: string) => {
     if (status === 'absent' && attendance[eventId]?.status !== 'absent') {
       setPendingEventId(eventId);
       setPendingAnnouncementId(announcementId || null);
+      setPendingTeamId(teamId || null);
       setAbsenceReason("");
       setIsAbsenceDialogOpen(true);
       return;
@@ -361,7 +424,8 @@ export default function Home({ user, onTabChange }: HomeProps) {
     }
 
     if (user) {
-      StorageService.updateAttendance(eventId, user.id, user.name, newStatus);
+      const attendee = resolveAttendee(teamId);
+      StorageService.updateAttendance(eventId, attendee.id, attendee.name, newStatus);
     }
   };
 
@@ -371,15 +435,17 @@ export default function Home({ user, onTabChange }: HomeProps) {
         ...prev,
         [pendingEventId]: { status: 'absent', reason: absenceReason }
       }));
-      StorageService.updateAttendance(pendingEventId, user.id, user.name, 'absent', absenceReason);
-      
+      const attendee = resolveAttendee(pendingTeamId || undefined);
+      StorageService.updateAttendance(pendingEventId, attendee.id, attendee.name, 'absent', absenceReason);
+
       if (pendingAnnouncementId) {
         setDismissedAnnouncementIds(prev => new Set([...prev, pendingAnnouncementId]));
       }
-      
+
       setIsAbsenceDialogOpen(false);
       setPendingEventId(null);
       setPendingAnnouncementId(null);
+      setPendingTeamId(null);
       setAbsenceReason("");
     }
   };
@@ -585,7 +651,7 @@ export default function Home({ user, onTabChange }: HomeProps) {
                                 </div>
                                 <div className="grid grid-cols-2 gap-2">
                                   <button
-                                    onClick={(e) => { e.stopPropagation(); handleAttendance(event.id, 'going'); }}
+                                    onClick={(e) => { e.stopPropagation(); handleAttendance(event.id, 'going', undefined, event.teamId); }}
                                     className={`h-9 rounded-xl text-[9px] font-black uppercase tracking-[0.18em] text-white active:scale-95 transition-all ${
                                       attendance[event.id]?.status === 'going' ? 'bg-emerald-500 shadow-lg shadow-emerald-500/30' : 'bg-primary'
                                     }`}
@@ -593,7 +659,7 @@ export default function Home({ user, onTabChange }: HomeProps) {
                                     {attendance[event.id]?.status === 'going' ? <span className="flex items-center justify-center gap-1"><Check className="w-2.5 h-2.5" />Going</span> : "I'm Going"}
                                   </button>
                                   <button
-                                    onClick={(e) => { e.stopPropagation(); handleAttendance(event.id, 'absent'); }}
+                                    onClick={(e) => { e.stopPropagation(); handleAttendance(event.id, 'absent', undefined, event.teamId); }}
                                     className={`h-9 rounded-xl text-[9px] font-black uppercase tracking-[0.18em] active:scale-95 transition-all ${
                                       attendance[event.id]?.status === 'absent' ? 'bg-rose-500 text-white shadow-lg shadow-rose-500/30' : 'text-white/80 bg-white/10'
                                     }`}
@@ -863,7 +929,7 @@ export default function Home({ user, onTabChange }: HomeProps) {
                         )}
                         {/* Show first 3 only */}
                         {visible.map((ann) => (
-                          <div key={ann.id} className={`bg-white rounded-2xl overflow-hidden relative ${ann.isUrgent ? 'border-2 border-red-400 border-l-[4px] border-l-red-500' : 'border border-primary/30 border-l-[3px] border-l-primary'}`}>
+                          <div key={ann.id} className={`bg-white rounded-2xl shadow-sm relative ${ann.isUrgent ? 'border border-red-400/40 border-l-[3px] border-l-red-500' : 'border border-primary/20 border-l-[3px] border-l-primary'}`}>
                             {user?.id === ann.senderId && (
                               <button
                                 onClick={() => setConfirmDeleteId(ann.id)}
@@ -874,14 +940,11 @@ export default function Home({ user, onTabChange }: HomeProps) {
                             )}
                             <div className={`flex-1 relative ${ann.isUrgent ? 'py-3.5 px-4' : 'py-2.5 px-4'}`}>
                               {ann.isUrgent && (
-                                <span className={`absolute top-3 ${user?.id === ann.senderId ? 'right-8' : 'right-3'} bg-red-50 text-red-500 text-[8px] font-black uppercase tracking-widest px-2.5 py-1 rounded-full border border-red-100`}>Urgent</span>
+                                <div className={`absolute top-3 ${user?.id === ann.senderId ? 'right-8' : 'right-3'} w-6 h-6 bg-red-50 rounded-full flex items-center justify-center border border-red-100`}>
+                                  <Bell className="w-3 h-3 text-red-500" />
+                                </div>
                               )}
                               <div className="flex items-center gap-1.5 mb-1">
-                                {ann.isUrgent && (
-                                  <div className="w-4 h-4 bg-red-50 rounded-full flex items-center justify-center">
-                                    <Bell className="w-2.5 h-2.5 text-red-500" />
-                                  </div>
-                                )}
                                 {ann.type === 'attendance_reminder' && !ann.isUrgent && (
                                   <div className="w-4 h-4 bg-primary/10 rounded-full flex items-center justify-center">
                                     <Clock className="w-2.5 h-2.5 text-primary" />
@@ -908,7 +971,7 @@ export default function Home({ user, onTabChange }: HomeProps) {
                                       <button
                                         onClick={(e) => {
                                           e.stopPropagation();
-                                          handleAttendance(ann.eventId!, 'going', ann.id);
+                                          handleAttendance(ann.eventId!, 'going', ann.id, ann.teamId);
                                         }}
                                         className="flex-1 h-8 bg-slate-900 text-white rounded-full text-[9px] font-black uppercase tracking-widest hover:bg-slate-800 transition-all active:scale-[0.98]"
                                       >
@@ -917,7 +980,7 @@ export default function Home({ user, onTabChange }: HomeProps) {
                                       <button
                                         onClick={(e) => {
                                           e.stopPropagation();
-                                          handleAttendance(ann.eventId!, 'absent', ann.id);
+                                          handleAttendance(ann.eventId!, 'absent', ann.id, ann.teamId);
                                         }}
                                         className="flex-1 h-8 bg-white border border-slate-200 text-slate-600 rounded-full text-[9px] font-black uppercase tracking-widest hover:bg-slate-50 transition-all active:scale-[0.98]"
                                       >
@@ -977,7 +1040,22 @@ export default function Home({ user, onTabChange }: HomeProps) {
                 const totalGoing = goingAttendees.length;
                 const totalAbsent = absentAttendees.length;
                 const records = StorageService.getAttendance()[mainEvent.id] || [];
-                const teamMembers = StorageService.getTeamMembers(team.id);
+                const rawMembers = StorageService.getTeamMembers(team.id);
+                // Include children from gameday_children who are on this team
+                const allChildren = JSON.parse(localStorage.getItem('gameday_children') || '[]');
+                const teamChildren = allChildren.filter((c: any) => c.teamIds?.includes(team.id));
+                const childIds = new Set(teamChildren.map((c: any) => c.id));
+                // Filter out children from regular members to avoid duplicates, then add children with parent info
+                const filteredMembers = rawMembers.filter((m: any) => !childIds.has(m.id));
+                const childMembers = teamChildren.map((c: any) => ({
+                  id: c.id,
+                  name: c.name,
+                  avatar: c.avatar,
+                  position: 'Player',
+                  isChild: true,
+                  parentName: c.parentNames?.[0] || 'Parent',
+                }));
+                const teamMembers = [...filteredMembers, ...childMembers];
                 const totalMembers = teamMembers.length;
                 const teamInitials = (teamNames[team.id] || team.name).split(' ').map((s: string) => s[0]).slice(0, 2).join('').toUpperCase();
                 return { team, mainEvent, eventSubtitle, goingAttendees, absentAttendees, totalGoing, totalAbsent, totalMembers, teamInitials, records, teamMembers };
@@ -1085,18 +1163,31 @@ export default function Home({ user, onTabChange }: HomeProps) {
                                 <div className="grid gap-2">
                                   {goingAttendees.map(a => {
                                     const player = teamMembers.find(p => p.id === a.userId);
+                                    const isChild = player?.isChild || player?.parentName || player?.parentId;
+                                    const profileData = StorageService.getUserData(a.userId);
+                                    // Also check the active user object in case getUserData missed it
+                                    const activeUser = JSON.parse(localStorage.getItem('gameday_user') || '{}');
+                                    const isActiveUser = activeUser.id === a.userId;
+                                    const displayName = player?.name || profileData?.name || (isActiveUser ? activeUser.name : null) || a.userName || a.userId;
+                                    const profilePosition = profileData?.position || (isActiveUser ? activeUser.position : null);
+                                    const memberRole = localStorage.getItem(`gameday_role_${a.userId}_${team.id}`);
+                                    const isCoachOfTeam = memberRole === 'coach' || memberRole === 'manager' || a.userId === team.coachId || a.userId === team.createdBy;
                                     return (
-                                      <button 
-                                        key={a.userId} 
-                                        onClick={() => onTabChange('profile')} // TODO: deep-link to member profile post-Firebase
+                                      <button
+                                        key={a.userId}
+                                        onClick={() => onTabChange('profile')}
                                         className="w-full flex items-center gap-3 p-3 bg-white rounded-2xl shadow-sm border border-green-400 h-14 text-left"
                                       >
                                         <div className="w-8 h-8 rounded-full bg-green-50 flex items-center justify-center text-green-500 shrink-0">
                                           <Check className="w-4 h-4" />
                                         </div>
                                         <div className="flex-1">
-                                          <p className="text-xs font-black text-slate-900 italic">{(a.userName || a.userId).split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ')}</p>
-                                          <p className="text-[10px] font-medium text-slate-400 uppercase tracking-widest leading-none mt-1">{player?.position || 'PLAYER'}</p>
+                                          <p className="text-xs font-black text-slate-900 italic">{displayName.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ')}</p>
+                                          {isChild ? (
+                                            <p className="text-[10px] font-medium text-slate-400 uppercase tracking-widest leading-none mt-1">PARENT: {player?.parentName || 'PARENT'}</p>
+                                          ) : !isCoachOfTeam && profilePosition ? (
+                                            <p className="text-[10px] font-medium text-slate-400 uppercase tracking-widest leading-none mt-1">{profilePosition}</p>
+                                          ) : null}
                                         </div>
                                       </button>
                                     );
@@ -1113,20 +1204,31 @@ export default function Home({ user, onTabChange }: HomeProps) {
                                 <div className="grid gap-2">
                                   {absentAttendees.map(a => {
                                     const player = teamMembers.find(p => p.id === a.userId);
+                                    const isChild = player?.isChild || player?.parentName || player?.parentId;
+                                    const profileData = StorageService.getUserData(a.userId);
+                                    // Also check the active user object in case getUserData missed it
+                                    const activeUser = JSON.parse(localStorage.getItem('gameday_user') || '{}');
+                                    const isActiveUser = activeUser.id === a.userId;
+                                    const displayName = player?.name || profileData?.name || (isActiveUser ? activeUser.name : null) || a.userName || a.userId;
+                                    const profilePosition = profileData?.position || (isActiveUser ? activeUser.position : null);
+                                    const memberRole = localStorage.getItem(`gameday_role_${a.userId}_${team.id}`);
+                                    const isCoachOfTeam = memberRole === 'coach' || memberRole === 'manager' || a.userId === team.coachId || a.userId === team.createdBy;
                                     return (
-                                      <button 
-                                        key={a.userId} 
-                                        onClick={() => onTabChange('profile')} // TODO: deep-link to member profile post-Firebase
+                                      <button
+                                        key={a.userId}
+                                        onClick={() => onTabChange('profile')}
                                         className="w-full flex items-center gap-3 p-3 bg-white rounded-2xl shadow-sm border border-red-400 h-14 text-left"
                                       >
                                         <div className="w-8 h-8 rounded-full bg-red-50 flex items-center justify-center text-red-400 shrink-0">
                                           <X className="w-4 h-4" />
                                         </div>
                                         <div className="flex-1">
-                                          <p className="text-xs font-black text-slate-900 italic">{(a.userName || a.userId).split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ')}</p>
-                                          <p className="text-[10px] font-medium text-slate-400 uppercase tracking-widest leading-none mt-1">
-                                            {a.reason || "NOT SPECIFIED"}
-                                          </p>
+                                          <p className="text-xs font-black text-slate-900 italic">{displayName.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ')}</p>
+                                          {isChild ? (
+                                            <p className="text-[10px] font-medium text-slate-400 uppercase tracking-widest leading-none mt-1">PARENT: {player?.parentName || 'PARENT'}</p>
+                                          ) : !isCoachOfTeam && profilePosition ? (
+                                            <p className="text-[10px] font-medium text-slate-400 uppercase tracking-widest leading-none mt-1">{profilePosition}</p>
+                                          ) : null}
                                         </div>
                                       </button>
                                     );
@@ -1148,6 +1250,13 @@ export default function Home({ user, onTabChange }: HomeProps) {
                                       const record = records.find(r => r.userId === player.id || r.userName === player.name);
                                       if (record) return null;
                                       
+                                      const isChild = player.isChild || player.parentName || player.parentId;
+                                      const profileDataNR = StorageService.getUserData(player.id);
+                                      const activeUserNR = JSON.parse(localStorage.getItem('gameday_user') || '{}');
+                                      const isActiveUserNR = activeUserNR.id === player.id;
+                                      const profilePos = profileDataNR?.position || (isActiveUserNR ? activeUserNR.position : null);
+                                      const mRole = localStorage.getItem(`gameday_role_${player.id}_${team.id}`);
+                                      const isCoachMember = mRole === 'coach' || mRole === 'manager' || player.id === team.coachId || player.id === team.createdBy;
                                       return (
                                         <div key={player.id} className="w-full flex items-center gap-3 p-3 bg-white rounded-2xl shadow-sm border border-dashed border-slate-200 h-14">
                                           <div className="w-8 h-8 rounded-full bg-slate-50 flex items-center justify-center text-slate-300 text-[10px] font-black">
@@ -1155,7 +1264,11 @@ export default function Home({ user, onTabChange }: HomeProps) {
                                           </div>
                                           <div className="flex-1">
                                             <p className="text-xs font-black text-slate-400 italic">{player.name.split(' ').map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase()).join(' ')}</p>
-                                            <p className="text-[10px] font-medium text-slate-300 uppercase tracking-widest leading-none mt-1">{player.position}</p>
+                                            {isChild ? (
+                                              <p className="text-[10px] font-medium text-slate-300 uppercase tracking-widest leading-none mt-1">PARENT: {player.parentName || 'PARENT'}</p>
+                                            ) : !isCoachMember && profilePos ? (
+                                              <p className="text-[10px] font-medium text-slate-300 uppercase tracking-widest leading-none mt-1">{profilePos}</p>
+                                            ) : null}
                                           </div>
                                         </div>
                                       );
@@ -1169,6 +1282,9 @@ export default function Home({ user, onTabChange }: HomeProps) {
                             <button
                               onClick={() => {
                                 if (!mainEvent) return;
+                                const reminderCheck = canSend('reminder');
+                                if (!reminderCheck.allowed) return;
+                                recordSend('reminder');
 
                                 // Sync club/team info
                                 const allTeams = [...MOCK_TEAMS, ...StorageService.getCustomTeams()];
@@ -1296,7 +1412,11 @@ export default function Home({ user, onTabChange }: HomeProps) {
                 {JSON.parse(localStorage.getItem('gameday_children') || '[]')
                   .filter((c: any) => c.parentIds?.includes(user?.id))
                   .map((child: any) => (
-                    <Card key={child.id} className="border-none shadow-sm bg-white rounded-2xl p-4">
+                    <Card
+                      key={child.id}
+                      className="border-none shadow-sm bg-white rounded-2xl p-4 cursor-pointer active:scale-[0.98] transition-all"
+                      onClick={() => { setSelectedChild(child); setChildJoinStep('view'); setChildJoinCode(''); setChildJoinError(''); }}
+                    >
                       <div className="flex items-center gap-3">
                         <DefaultAvatar name={child.name} size="md" className="rounded-xl" />
                         <div>
@@ -1484,24 +1604,18 @@ export default function Home({ user, onTabChange }: HomeProps) {
                 </div>
 
                 {/* Get Directions button */}
-                <a
-                  href={locationModalEvent.pinLocation
-                    ? `https://www.google.com/maps/dir/?api=1&destination=${locationModalEvent.pinLocation.lat},${locationModalEvent.pinLocation.lng}`
-                    : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(locationModalEvent.location || '')}`
-                  }
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  onClick={() => setLocationModalEvent(null)}
-                  className="flex items-center justify-center gap-2 
-                             w-full h-14 bg-primary hover:bg-primary/90 
-                             text-white rounded-2xl text-[11px] font-black 
-                             uppercase tracking-widest transition-all 
-                             active:scale-[0.98] shadow-lg 
-                             shadow-primary/20 no-underline"
+                <button
+                  onClick={() => { setLocationModalEvent(null); openExternal(locationModalEvent.pinLocation ? `https://www.google.com/maps/dir/?api=1&destination=${locationModalEvent.pinLocation.lat},${locationModalEvent.pinLocation.lng}` : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(locationModalEvent.location || '')}`); }}
+                  className="flex items-center justify-center gap-2
+                             w-full h-14 bg-primary hover:bg-primary/90
+                             text-white rounded-2xl text-[11px] font-black
+                             uppercase tracking-widest transition-all
+                             active:scale-[0.98] shadow-lg
+                             shadow-primary/20"
                 >
                   <Navigation className="w-5 h-5" />
                   Get Directions
-                </a>
+                </button>
 
                 {/* Open in Maps note */}
                 <p className="text-[9px] text-slate-400 text-center">
@@ -1578,11 +1692,13 @@ export default function Home({ user, onTabChange }: HomeProps) {
                                 new Date(a.timestamp).getTime()
                     );
                   return sorted.map((ann) => (
-                    <div key={ann.id} className={`bg-white rounded-2xl overflow-hidden ${ann.isUrgent ? 'border-2 border-red-400 border-l-[4px] border-l-red-500' : 'border border-primary/30 border-l-[3px] border-l-primary'}`}>
+                    <div key={ann.id} className={`bg-white rounded-2xl shadow-sm overflow-hidden ${ann.isUrgent ? 'border-l-[3px] border-l-red-500' : 'border-l-[3px] border-primary'}`}>
                       <div className={`flex-1 relative ${ann.isUrgent ? 'py-3.5 px-4' : 'py-2.5 px-4'}`}>
-                      {/* Urgent badge */}
+                      {/* Urgent bell icon */}
                       {ann.isUrgent && (
-                        <span className="absolute top-3 right-3 bg-red-50 text-red-500 text-[8px] font-black uppercase tracking-widest px-2.5 py-1 rounded-full border border-red-100">Urgent</span>
+                        <div className={`absolute top-3 ${user?.id === ann.senderId ? 'right-20' : 'right-3'} w-6 h-6 bg-red-50 rounded-full flex items-center justify-center border border-red-100`}>
+                          <Bell className="w-3 h-3 text-red-500" />
+                        </div>
                       )}
                       {/* Edit/Delete buttons — only for sender */}
                       {user?.id === ann.senderId && !ann.isUrgent && (
@@ -1612,7 +1728,7 @@ export default function Home({ user, onTabChange }: HomeProps) {
                         </div>
                       )}
                       {user?.id === ann.senderId && ann.isUrgent && (
-                        <div className="absolute top-3 right-28 flex gap-1 transition-opacity">
+                        <div className="absolute top-3 right-3 flex gap-1 transition-opacity">
                           <button
                             onClick={() => {
                               setEditingAnnouncementId(ann.id);
@@ -1638,11 +1754,6 @@ export default function Home({ user, onTabChange }: HomeProps) {
                         </div>
                       )}
                       <div className="flex items-center gap-1.5 mb-1">
-                        {ann.isUrgent && (
-                          <div className="w-4 h-4 bg-red-50 rounded-full flex items-center justify-center">
-                            <Bell className="w-2.5 h-2.5 text-red-500" />
-                          </div>
-                        )}
                         {ann.type === 'attendance_reminder' && !ann.isUrgent && (
                           <div className="w-4 h-4 bg-primary/10 rounded-full flex items-center justify-center">
                             <Clock className="w-2.5 h-2.5 text-primary" />
@@ -1669,7 +1780,7 @@ export default function Home({ user, onTabChange }: HomeProps) {
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  handleAttendance(ann.eventId!, 'going', ann.id);
+                                  handleAttendance(ann.eventId!, 'going', ann.id, ann.teamId);
                                 }}
                                 className="flex-1 h-9 bg-slate-900 text-white rounded-full text-[10px] font-black uppercase tracking-widest hover:bg-slate-800 transition-all active:scale-[0.98]"
                               >
@@ -1678,7 +1789,7 @@ export default function Home({ user, onTabChange }: HomeProps) {
                               <button
                                 onClick={(e) => {
                                   e.stopPropagation();
-                                  handleAttendance(ann.eventId!, 'absent', ann.id);
+                                  handleAttendance(ann.eventId!, 'absent', ann.id, ann.teamId);
                                 }}
                                 className="flex-1 h-9 bg-white border border-slate-200 text-slate-600 rounded-full text-[10px] font-black uppercase tracking-widest hover:bg-slate-50 transition-all active:scale-[0.98]"
                               >
@@ -2171,7 +2282,8 @@ export default function Home({ user, onTabChange }: HomeProps) {
                   type="text"
                   placeholder="Title"
                   value={broadcastTitle}
-                  onChange={e => setBroadcastTitle(e.target.value)}
+                  onChange={e => setBroadcastTitle(e.target.value.slice(0, 100))}
+                  maxLength={100}
                   className="w-full bg-slate-50 rounded-2xl px-4 py-3 text-[12px] font-bold text-slate-900 border border-slate-100 outline-none focus:ring-2 focus:ring-primary/20 placeholder:text-slate-300 placeholder:font-medium"
                 />
 
@@ -2180,13 +2292,21 @@ export default function Home({ user, onTabChange }: HomeProps) {
                   <textarea
                     placeholder="Message"
                     value={broadcastText}
-                    onChange={e => setBroadcastText(e.target.value)}
+                    onChange={e => setBroadcastText(e.target.value.slice(0, MAX_MESSAGE_LENGTH))}
+                    maxLength={MAX_MESSAGE_LENGTH}
                     rows={3}
                     className="w-full bg-slate-50 border border-slate-100 rounded-2xl px-4 py-3 pr-12 text-[12px] font-medium text-slate-700 outline-none focus:ring-2 focus:ring-primary/20 resize-none placeholder:text-slate-300 min-h-[80px]"
                   />
                   <button
                     onClick={() => {
                       if (!broadcastText.trim() || !user) return;
+                      const check = canSend('broadcast');
+                      if (!check.allowed) {
+                        setBroadcastRateLimitMsg(check.reason || 'Please wait');
+                        setTimeout(() => setBroadcastRateLimitMsg(null), 2000);
+                        return;
+                      }
+                      recordSend('broadcast');
                       const allTeams = [...MOCK_TEAMS, ...StorageService.getCustomTeams()];
                       if (selectedTeamIds.length > 0) {
                         selectedTeamIds.forEach(teamId => {
@@ -2213,6 +2333,8 @@ export default function Home({ user, onTabChange }: HomeProps) {
                             clubId: announcementClubId,
                             title: broadcastTitle.trim() || 'Direct Message',
                             content: broadcastText.trim(),
+                            type: 'direct_message',
+                            recipientId: playerId,
                             isUrgent,
                           });
                         });
@@ -2241,6 +2363,11 @@ export default function Home({ user, onTabChange }: HomeProps) {
                   </button>
                 </div>
 
+                {/* Rate limit toast */}
+                {broadcastRateLimitMsg && (
+                  <p className="text-[10px] font-bold text-red-500 text-center">{broadcastRateLimitMsg}</p>
+                )}
+
                 {/* Mark as Urgent toggle */}
                 <div className="flex items-center justify-between px-1">
                   <div className="flex items-center gap-2">
@@ -2254,6 +2381,409 @@ export default function Home({ user, onTabChange }: HomeProps) {
                     <span className={`absolute top-1 w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${isUrgent ? 'left-5' : 'left-1'}`} />
                   </button>
                 </div>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+
+      {/* Child Detail Modal */}
+      <AnimatePresence>
+        {selectedChild && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setSelectedChild(null)}
+              className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[60]"
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2
+                         z-[70] w-[90%] max-w-sm bg-white rounded-[2.5rem] shadow-2xl
+                         overflow-hidden max-h-[85vh] flex flex-col"
+            >
+              {/* Header */}
+              <div className="bg-slate-900 p-6 flex items-center justify-between shrink-0">
+                <div className="flex items-center gap-3">
+                  {childJoinStep !== 'view' && (
+                    <button
+                      onClick={() => { setChildJoinStep('view'); setChildJoinCode(''); setChildJoinError(''); }}
+                      className="w-8 h-8 rounded-xl bg-white/10 hover:bg-white/20 flex items-center justify-center text-white/60 hover:text-white transition-all"
+                    >
+                      <ChevronLeft className="w-4 h-4" />
+                    </button>
+                  )}
+                  <DefaultAvatar name={selectedChild.name} size="sm" className="rounded-lg border-2 border-white/20" />
+                  <div>
+                    <h3 className="text-base font-black uppercase italic text-white leading-none">
+                      {selectedChild.name}
+                    </h3>
+                    <p className="text-[9px] font-bold text-white/40 uppercase tracking-widest mt-0.5">
+                      {childJoinStep === 'view' ? 'Profile' : childJoinStep === 'join' ? 'Join a Team' : 'All Done'}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setSelectedChild(null)}
+                  className="w-8 h-8 rounded-xl bg-white/10 hover:bg-white/20
+                             flex items-center justify-center text-white/60
+                             hover:text-white transition-all"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Body */}
+              <div className="p-5 space-y-4 overflow-y-auto">
+                {childJoinStep === 'success' ? (
+                  <div className="text-center py-6 space-y-3">
+                    <div className="w-14 h-14 rounded-full bg-green-50 flex items-center justify-center mx-auto">
+                      <CheckCircle2 className="w-7 h-7 text-green-500" />
+                    </div>
+                    <h4 className="text-sm font-black uppercase italic text-slate-900">Joined!</h4>
+                    <p className="text-[11px] font-medium text-slate-500">
+                      {selectedChild.name} has been added to <span className="font-bold text-slate-700">{childJoinedTeamName}</span>
+                    </p>
+                  </div>
+                ) : childJoinStep === 'join' ? (
+                  <>
+                    <p className="text-[11px] font-medium text-slate-500 leading-relaxed">
+                      Enter the team access code to add {selectedChild.name} to a team.
+                    </p>
+                    <div className="space-y-1.5">
+                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-1">
+                        Team Access Code
+                      </label>
+                      <input
+                        type="text"
+                        value={childJoinCode}
+                        onChange={(e) => { setChildJoinCode(e.target.value.toUpperCase()); setChildJoinError(''); }}
+                        placeholder="e.g. KRK-ABC"
+                        className="w-full h-12 bg-slate-50 rounded-2xl px-4 text-[13px] font-black tracking-widest text-slate-900 border border-slate-100 outline-none focus:border-primary/40 focus:ring-2 focus:ring-primary/10 text-center uppercase"
+                      />
+                    </div>
+                    {childJoinError && (
+                      <div className="bg-red-50 rounded-xl p-3 flex items-center gap-2">
+                        <AlertCircle className="w-4 h-4 text-red-500 shrink-0" />
+                        <p className="text-[10px] font-bold text-red-600">{childJoinError}</p>
+                      </div>
+                    )}
+                    <button
+                      onClick={async () => {
+                        if (!childJoinCode || childJoinCode.length < 4) {
+                          setChildJoinError('Please enter a valid access code');
+                          return;
+                        }
+
+                        const customTeam = StorageService.findTeamByCode(childJoinCode);
+                        const mockTeam = MOCK_TEAMS.find((t: any) => t.joinCode?.toUpperCase() === childJoinCode.toUpperCase());
+                        const fTeam = customTeam || mockTeam;
+
+                        if (!fTeam) {
+                          setChildJoinError('Invalid code. Check with the coach and try again.');
+                          return;
+                        }
+
+                        // Add child to team
+                        const children = JSON.parse(localStorage.getItem('gameday_children') || '[]');
+                        const idx = children.findIndex((c: any) => c.id === selectedChild.id);
+                        if (idx !== -1) {
+                          if (!children[idx].teamIds) children[idx].teamIds = [];
+                          if (!children[idx].teamIds.includes(fTeam.id)) {
+                            children[idx].teamIds.push(fTeam.id);
+                          }
+                          localStorage.setItem('gameday_children', JSON.stringify(children));
+                          setSelectedChild({ ...selectedChild, teamIds: children[idx].teamIds });
+
+                          // Add parent to team if not already
+                          if (user?.id) {
+                            StorageService.addTeamToUser(user.id, fTeam.id);
+                            const savedUser = JSON.parse(localStorage.getItem('gameday_user') || '{}');
+                            const updatedTeamIds = [...new Set([...(savedUser.teamIds || []), fTeam.id])];
+                            savedUser.teamIds = updatedTeamIds;
+                            localStorage.setItem('gameday_user', JSON.stringify(savedUser));
+                            localStorage.setItem(`gameday_role_${user.id}_${fTeam.id}`, 'parent');
+                            localStorage.setItem(`gameday_child_${user.id}_${fTeam.id}`, selectedChild.id);
+
+                            // Sync to Firestore
+                            try {
+                              StorageService.syncChildToFirestore(children[idx]).catch(console.error);
+                              await StorageService.syncTeamToFirestore(fTeam);
+                              await StorageService.syncTeamMembersToFirestore(fTeam.id, JSON.parse(localStorage.getItem(`gameday_team_members_${fTeam.id}`) || '[]'));
+
+                              const { db } = await import('../firebase');
+                              const { doc, updateDoc } = await import('firebase/firestore');
+                              await updateDoc(doc(db, 'users', user.id), {
+                                teamIds: updatedTeamIds,
+                              });
+                              onUpdateUser?.({ teamIds: updatedTeamIds });
+                            } catch (e) {
+                              console.warn('Firestore child team join failed:', e);
+                            }
+
+                            window.dispatchEvent(new Event('gameday_update'));
+                            setChildJoinedTeamName(fTeam.name);
+                            setChildJoinStep('success');
+                            setTimeout(() => {
+                              setChildJoinStep('view');
+                              setChildJoinCode('');
+                            }, 2500);
+                          }
+                        }
+                      }}
+                      disabled={!childJoinCode}
+                      className="w-full h-12 bg-primary hover:bg-primary/90 text-white rounded-2xl text-[11px] font-black uppercase tracking-widest transition-all active:scale-[0.98] disabled:opacity-50"
+                    >
+                      Join Team
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    {/* Current teams */}
+                    <div className="space-y-2">
+                      <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-1">
+                        {(selectedChild.teamIds || []).length > 0 ? 'Current Teams' : 'No Teams Yet'}
+                      </span>
+                      {(selectedChild.teamIds || []).map((tid: string) => {
+                        const allTeams = JSON.parse(localStorage.getItem('gameday_custom_teams') || '[]');
+                        const team = allTeams.find((t: any) => t.id === tid);
+                        const displayTeamName = localStorage.getItem(`gameday_team_name_${tid}`) || team?.name || tid;
+                        const teamLogo = StorageService.getTeamLogo(tid) || team?.logo;
+                        return team ? (
+                          <div key={tid} className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl">
+                            <div className="w-8 h-8 rounded-lg bg-white border border-slate-100 flex items-center justify-center overflow-hidden shrink-0">
+                              {teamLogo ? (
+                                <img src={teamLogo} alt={displayTeamName} className="w-full h-full object-contain p-0.5" />
+                              ) : (
+                                <Users className="w-4 h-4 text-slate-300" />
+                              )}
+                            </div>
+                            <span className="text-xs font-bold text-slate-700 flex-1">{displayTeamName}</span>
+                            <button
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                if (!user?.id) return;
+                                const childId = selectedChild.id;
+
+                                // 1. Remove team from child's teamIds in gameday_children
+                                const children = JSON.parse(localStorage.getItem('gameday_children') || '[]');
+                                const cIdx = children.findIndex((c: any) => c.id === childId);
+                                if (cIdx !== -1) {
+                                  children[cIdx].teamIds = (children[cIdx].teamIds || []).filter((id: string) => id !== tid);
+                                  localStorage.setItem('gameday_children', JSON.stringify(children));
+                                  StorageService.syncChildToFirestore(children[cIdx]).catch(console.warn);
+                                }
+
+                                // 2. Remove child from team members
+                                StorageService.removeTeamMember(tid, childId);
+
+                                // 3. Remove child from lineup
+                                const lineupKey = `gameday_lineup_${tid}`;
+                                const lineup = JSON.parse(localStorage.getItem(lineupKey) || '{}');
+                                if (lineup.starting) lineup.starting = lineup.starting.filter((p: any) => p.id !== childId);
+                                if (lineup.reserves) lineup.reserves = lineup.reserves.filter((p: any) => p.id !== childId);
+                                localStorage.setItem(lineupKey, JSON.stringify(lineup));
+
+                                // 4. Remove child attendance for this team's events
+                                const allEvts = StorageService.getEvents();
+                                const teamEventIds = allEvts.filter((ev: any) => ev.teamId === tid).map((ev: any) => ev.id);
+                                const att = JSON.parse(localStorage.getItem('gameday_attendance') || '{}');
+                                teamEventIds.forEach((eid: string) => {
+                                  if (att[eid]) {
+                                    att[eid] = att[eid].filter((a: any) => a.userId !== childId);
+                                    if (att[eid].length === 0) delete att[eid];
+                                  }
+                                });
+                                localStorage.setItem('gameday_attendance', JSON.stringify(att));
+
+                                // 5. Remove parent role + child link for this team
+                                localStorage.removeItem(`gameday_role_${user.id}_${tid}`);
+                                localStorage.removeItem(`gameday_child_${user.id}_${tid}`);
+
+                                // 6. Remove team from parent's teamIds if they only joined as parent
+                                const savedUser = JSON.parse(localStorage.getItem('gameday_user') || '{}');
+                                savedUser.teamIds = (savedUser.teamIds || []).filter((id: string) => id !== tid);
+                                localStorage.setItem('gameday_user', JSON.stringify(savedUser));
+                                const uData = JSON.parse(localStorage.getItem(`gameday_user_${user.id}`) || '{}');
+                                uData.teamIds = (uData.teamIds || []).filter((id: string) => id !== tid);
+                                localStorage.setItem(`gameday_user_${user.id}`, JSON.stringify(uData));
+
+                                // 7. Sync parent removal to Firestore
+                                try {
+                                  const { db } = await import('../firebase');
+                                  const { doc, getDoc, setDoc } = await import('firebase/firestore');
+                                  const userRef = doc(db, 'users', user.id);
+                                  const userSnap = await getDoc(userRef);
+                                  if (userSnap.exists()) {
+                                    const fsData = userSnap.data();
+                                    await setDoc(userRef, { teamIds: (fsData.teamIds || []).filter((id: string) => id !== tid) }, { merge: true });
+                                  }
+                                  StorageService.removeMemberFromFirestore(tid, user.id).catch(console.warn);
+                                  StorageService.removeMemberFromFirestore(tid, childId).catch(console.warn);
+                                } catch (e) {
+                                  console.warn('Firestore sync failed:', e);
+                                }
+
+                                // 8. Update React state
+                                const updatedChildTeamIds = (selectedChild.teamIds || []).filter((id: string) => id !== tid);
+                                setSelectedChild({ ...selectedChild, teamIds: updatedChildTeamIds });
+                                if (onUpdateUser) {
+                                  onUpdateUser({ teamIds: (user.teamIds || []).filter(id => id !== tid) });
+                                }
+                                window.dispatchEvent(new Event('gameday_update'));
+                              }}
+                              className="w-7 h-7 rounded-full bg-red-50 hover:bg-red-100 flex items-center justify-center shrink-0 transition-all active:scale-90"
+                            >
+                              <X className="w-3.5 h-3.5 text-red-400" />
+                            </button>
+                          </div>
+                        ) : null;
+                      })}
+                    </div>
+
+                    {/* Join a Team button */}
+                    <button
+                      onClick={() => setChildJoinStep('join')}
+                      className="w-full h-12 bg-slate-900 text-white rounded-2xl
+                                 text-[11px] font-black uppercase tracking-widest
+                                 hover:bg-slate-800 active:scale-[0.98] transition-all
+                                 shadow-lg shadow-slate-200 flex items-center justify-center gap-2"
+                    >
+                      <Plus className="w-4 h-4" />
+                      Join a Team
+                    </button>
+
+                    {/* Remove Child button */}
+                    <button
+                      onClick={() => setShowConfirmRemoveChild(true)}
+                      className="w-full h-10 rounded-2xl border border-red-200 bg-white text-red-500 text-[9px] font-black uppercase tracking-widest transition-all hover:bg-red-50 active:scale-[0.98] flex items-center justify-center gap-2"
+                    >
+                      <UserMinus className="w-3.5 h-3.5" />
+                      Remove Child
+                    </button>
+
+                    {/* Remove Child Confirmation Modal */}
+                    <AnimatePresence>
+                      {showConfirmRemoveChild && (
+                        <>
+                          <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            className="fixed inset-0 bg-black/60 z-[80]"
+                            onClick={() => setShowConfirmRemoveChild(false)}
+                          />
+                          <motion.div
+                            initial={{ opacity: 0, scale: 0.95, y: 20 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.95, y: 20 }}
+                            className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[85] w-[88%] max-w-sm bg-white rounded-[2rem] shadow-2xl overflow-hidden"
+                          >
+                            <div className="bg-slate-900 p-6">
+                              <h3 className="text-white text-base font-black uppercase tracking-tight">Remove Child</h3>
+                              <p className="text-slate-400 text-xs mt-1">This action cannot be undone</p>
+                            </div>
+                            <div className="p-6">
+                              <p className="text-sm text-slate-600 mb-6">
+                                Remove <span className="font-bold text-slate-900">{selectedChild?.name}</span> from your profile? They will be removed from all teams.
+                              </p>
+                              <div className="flex gap-3">
+                                <button
+                                  onClick={() => setShowConfirmRemoveChild(false)}
+                                  className="flex-1 h-11 rounded-2xl bg-slate-100 text-slate-600 text-[10px] font-black uppercase tracking-widest hover:bg-slate-200 active:scale-[0.98] transition-all"
+                                >
+                                  Cancel
+                                </button>
+                                <button
+                                  onClick={async () => {
+                                    setShowConfirmRemoveChild(false);
+                                    if (!user?.id) return;
+
+                        const childId = selectedChild.id;
+                        const childTeamIds: string[] = selectedChild.teamIds || [];
+
+                        // 1. Remove child from gameday_children
+                        const children = JSON.parse(localStorage.getItem('gameday_children') || '[]');
+                        const idx = children.findIndex((c: any) => c.id === childId);
+                        if (idx !== -1) {
+                          const child = children[idx];
+                          child.parentIds = (child.parentIds || []).filter((id: string) => id !== user.id);
+                          child.parentNames = (child.parentNames || []).filter((n: string) => n !== user.name);
+
+                          if (child.parentIds.length === 0) {
+                            children.splice(idx, 1);
+                            try {
+                              const { db } = await import('../firebase');
+                              const { doc, deleteDoc } = await import('firebase/firestore');
+                              await deleteDoc(doc(db, 'children', childId));
+                            } catch (e) {
+                              console.warn('Failed to delete child from Firestore:', e);
+                            }
+                          } else {
+                            children[idx] = child;
+                            StorageService.syncChildToFirestore(child).catch(console.error);
+                          }
+                          localStorage.setItem('gameday_children', JSON.stringify(children));
+                        }
+
+                        // 2. Remove child from team member lists
+                        childTeamIds.forEach((tid: string) => {
+                          StorageService.removeTeamMember(tid, childId);
+                          localStorage.removeItem(`gameday_child_${user.id}_${tid}`);
+                        });
+
+                        // 3. Remove parent's team membership ONLY if they're solely a parent
+                        const savedUser = JSON.parse(localStorage.getItem('gameday_user') || '{}');
+                        const teamsToRemove: string[] = [];
+                        childTeamIds.forEach((tid: string) => {
+                          const role = localStorage.getItem(`gameday_role_${user.id}_${tid}`);
+                          if (role === 'parent') {
+                            teamsToRemove.push(tid);
+                            localStorage.removeItem(`gameday_role_${user.id}_${tid}`);
+                          }
+                        });
+
+                        if (teamsToRemove.length > 0) {
+                          savedUser.teamIds = (savedUser.teamIds || []).filter((id: string) => !teamsToRemove.includes(id));
+                          localStorage.setItem('gameday_user', JSON.stringify(savedUser));
+                          const userData = JSON.parse(localStorage.getItem(`gameday_user_${user.id}`) || '{}');
+                          userData.teamIds = (userData.teamIds || []).filter((id: string) => !teamsToRemove.includes(id));
+                          localStorage.setItem(`gameday_user_${user.id}`, JSON.stringify(userData));
+                          onUpdateUser?.({ teamIds: savedUser.teamIds });
+                        }
+
+                        // 4. Remove child from Firestore user children array
+                        try {
+                          const { db } = await import('../firebase');
+                          const { doc, updateDoc } = await import('firebase/firestore');
+                          const { arrayRemove } = await import('firebase/firestore');
+                          await updateDoc(doc(db, 'users', user.id), {
+                            children: arrayRemove(childId),
+                            ...(teamsToRemove.length > 0 ? { teamIds: savedUser.teamIds } : {}),
+                          });
+                        } catch (e) {
+                          console.warn('Firestore child removal sync failed:', e);
+                        }
+
+                        window.dispatchEvent(new Event('gameday_update'));
+                        setSelectedChild(null);
+                      }}
+                                  className="flex-1 h-11 rounded-2xl bg-red-500 text-white text-[10px] font-black uppercase tracking-widest hover:bg-red-600 active:scale-[0.98] transition-all"
+                                >
+                                  Remove
+                                </button>
+                              </div>
+                            </div>
+                          </motion.div>
+                        </>
+                      )}
+                    </AnimatePresence>
+                  </>
+                )}
               </div>
             </motion.div>
           </>

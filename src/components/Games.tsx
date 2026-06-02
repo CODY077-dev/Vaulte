@@ -7,6 +7,7 @@ import { Calendar, MapPin, Clock, Trophy, ChevronRight, ChevronDown, Star, Troph
 import { motion, AnimatePresence } from "motion/react";
 import DefaultAvatar from "./DefaultAvatar";
 import StorageService from "../services/StorageService";
+import { openExternal } from "../utils/openExternal";
 
 import { MOCK_TEAMS } from "../constants";
 import { User } from "../types";
@@ -292,7 +293,12 @@ type ViewType = "my-games" | "favourites" | "sport";
 
 const getShortLocation = (location: string | undefined): string => {
   if (!location) return '';
-  return location.split(',')[0].trim();
+  // Take the part before the first comma
+  const beforeComma = location.split(',')[0].trim();
+  // If still long (more than 2 words), only show the first 2 words
+  const words = beforeComma.split(/\s+/);
+  if (words.length > 2) return words.slice(0, 2).join(' ');
+  return beforeComma;
 };
 
 interface GamesProps {
@@ -364,8 +370,11 @@ export default function Games({ user }: GamesProps) {
   );
 
   const parseGameDate = (dateStr: string): Date => {
-    if (dateStr === "Today" || dateStr === "Saturday 12th April") return new Date(2026, 3, 12);
-    if (dateStr === "Tomorrow" || dateStr === "Sunday 13th April") return new Date(2026, 3, 13);
+    const currentYear = new Date().getFullYear();
+    if (dateStr === "Today") return new Date();
+    if (dateStr === "Tomorrow") { const d = new Date(); d.setDate(d.getDate() + 1); return d; }
+    if (dateStr === "Saturday 12th April") return new Date(currentYear, 3, 12);
+    if (dateStr === "Sunday 13th April") return new Date(currentYear, 3, 13);
     const months: Record<string, number> = {
       January: 0, February: 1, March: 2, April: 3, May: 4, June: 5,
       July: 6, August: 7, September: 8, October: 9, November: 10, December: 11
@@ -374,9 +383,9 @@ export default function Games({ user }: GamesProps) {
     if (match) {
       const day = parseInt(match[1]);
       const month = months[match[2]];
-      if (month !== undefined) return new Date(2026, month, day);
+      if (month !== undefined) return new Date(currentYear, month, day);
     }
-    return new Date(2026, 3, 12);
+    return new Date();
   };
 
   const parseStoredDate = (dateStr: string): Date => {
@@ -469,7 +478,8 @@ export default function Games({ user }: GamesProps) {
         const vsMatch = e.title?.match(/[Vv]s\.?\s+(.+)/);
         const allTeams = [...MOCK_TEAMS, ...customTeams, ...legacyTeams];
         const matchedTeam = allTeams.find((t: any) => t.id === e.teamId);
-        const homeTeam = matchedTeam?.name || e.teamName || e.homeTeam || 'Unknown Team';
+        const rawHomeName = matchedTeam?.name || e.teamName || e.homeTeam || 'Unknown Team';
+        const homeTeam = (e.teamId && teamNames[e.teamId]) || rawHomeName;
         const awayTeam = e.opponent || e.title || (vsMatch ? vsMatch[1].trim() : '') || e.awayTeam || 'TBC';
         return {
           id: e.id,
@@ -501,7 +511,7 @@ export default function Games({ user }: GamesProps) {
         return {
           id: e.id,
           league: '',
-          homeTeam: matchedTeam?.name || 'Club',
+          homeTeam: (e.teamId && teamNames[e.teamId]) || matchedTeam?.name || 'Club',
           homeTeamId: e.teamId || '',
           awayTeam: '',
           title: e.title || 'Event',
@@ -619,7 +629,7 @@ export default function Games({ user }: GamesProps) {
           <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
             {/* Home */}
             <div className="flex items-center gap-2">
-              <div className="w-8 h-8 rounded-full bg-slate-100 overflow-hidden flex items-center justify-center shrink-0">
+              <div className="w-9 h-9 rounded-lg bg-slate-100 overflow-hidden flex items-center justify-center shrink-0">
                 {homeLogo
                   ? <img src={homeLogo} alt={game.homeTeam} className="w-full h-full object-contain" onError={e => { (e.target as HTMLImageElement).style.display = 'none'; }} />
                   : <span className="text-[10px] font-black text-slate-400">{initials(game.homeTeam)}</span>
@@ -642,7 +652,7 @@ export default function Games({ user }: GamesProps) {
             {/* Away */}
             <div className="flex items-center gap-2 justify-end">
               <span className="text-[11px] font-black uppercase tracking-tight text-slate-900 truncate text-right">{game.awayTeam}</span>
-              <div className="w-8 h-8 rounded-full bg-slate-100 overflow-hidden flex items-center justify-center shrink-0">
+              <div className="w-9 h-9 rounded-lg bg-slate-100 overflow-hidden flex items-center justify-center shrink-0">
                 <span className="text-[10px] font-black text-slate-400">{initials(game.awayTeam)}</span>
               </div>
             </div>
@@ -783,10 +793,10 @@ export default function Games({ user }: GamesProps) {
                   });
                 }}
               >
-                <span className="text-[10px] font-black text-slate-900 uppercase tracking-[0.18em] truncate flex-1 min-w-0 text-left">{dateKey}</span>
+                <span className="text-[10px] font-black text-primary uppercase tracking-[0.18em] truncate flex-1 min-w-0 text-left">{dateKey}</span>
                 <div className="flex items-center gap-2 shrink-0">
-                  <span className="text-[9px] font-bold text-slate-400 uppercase tracking-[0.12em]">
-                    {gamesByDate[dateKey].length} {gamesByDate[dateKey].length === 1 ? 'Game' : 'Games'}
+                  <span className="text-[13px] font-black text-primary tabular-nums">
+                    {gamesByDate[dateKey].length}
                   </span>
                   {dateKey !== autoExpandKey && (
                     isExpanded(dateKey)
@@ -1061,16 +1071,13 @@ export default function Games({ user }: GamesProps) {
                     </button>
                     {(game as any).pinLocation && (
                       <div className="flex justify-center mt-1">
-                        <a 
-                          href={`https://www.google.com/maps/dir/?api=1&destination={(game as any).pinLocation.lat},{(game as any).pinLocation.lng}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
+                        <button
+                          onClick={(e) => { e.stopPropagation(); openExternal(`https://www.google.com/maps/dir/?api=1&destination=${(game as any).pinLocation.lat},${(game as any).pinLocation.lng}`); }}
                           className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-primary/10 text-primary rounded-xl text-[9px] font-black uppercase tracking-widest hover:bg-primary/20 transition-colors"
-                          onClick={(e) => e.stopPropagation()}
                         >
                           <MapPin className="w-3 h-3" />
                           Get Directions
-                        </a>
+                        </button>
                       </div>
                     )}
                   </div>
@@ -1153,22 +1160,19 @@ export default function Games({ user }: GamesProps) {
                       <MapPin className="w-2.5 h-2.5" />
                       <div className="flex flex-col text-left">
                         <span className="truncate max-w-[50px]">{getShortLocation(game.location)}</span>
-                        {(game as any).pinLocation || game.location && (
+                        {((game as any).pinLocation || game.location) && (
                           <span className="text-[6px] font-bold text-primary uppercase tracking-widest block">Tap for map</span>
                         )}
                       </div>
                     </button>
                     {(game as any).pinLocation && (
-                      <a 
-                        href={`https://www.google.com/maps/dir/?api=1&destination={(game as any).pinLocation.lat},{(game as any).pinLocation.lng}`}
-                        target="_blank"
-                        rel="noopener noreferrer"
+                      <button
+                        onClick={(e) => { e.stopPropagation(); openExternal(`https://www.google.com/maps/dir/?api=1&destination=${(game as any).pinLocation.lat},${(game as any).pinLocation.lng}`); }}
                         className="inline-flex items-center gap-1 mt-1.5 px-2 py-1 bg-primary/10 text-primary rounded-lg text-[7px] font-black uppercase tracking-widest hover:bg-primary/20 transition-colors"
-                        onClick={(e) => e.stopPropagation()}
                       >
                         <MapPin className="w-2 h-2" />
                         Directions
-                      </a>
+                      </button>
                     )}
                   </div>
                   <div className="w-6 h-6 rounded-lg bg-slate-50 flex items-center justify-center group-hover:bg-primary/10 transition-colors">
@@ -1292,11 +1296,11 @@ export default function Games({ user }: GamesProps) {
                       </div>
                       <div className="space-y-2">
                         <div className="flex flex-col items-center gap-2 min-w-0">
-                          <p className="text-[10px] font-bold text-slate-900 leading-tight break-words text-center w-full px-1">{game.homeTeam}</p>
+                          <p className="text-[10px] font-bold text-slate-900 leading-tight break-words text-center w-full px-1">{game.homeTeamId ? (teamNames[game.homeTeamId] || game.homeTeam) : game.homeTeam}</p>
                           {game.score && <span className="text-[10px] font-black">{game.score.home}</span>}
                         </div>
                         <div className="flex flex-col items-center gap-2 min-w-0">
-                          <p className="text-[10px] font-bold text-slate-900 leading-tight break-words text-center w-full px-1">{game.awayTeam}</p>
+                          <p className="text-[10px] font-bold text-slate-900 leading-tight break-words text-center w-full px-1">{(game as any).awayTeamId ? (teamNames[(game as any).awayTeamId] || game.awayTeam) : game.awayTeam}</p>
                           {game.score && <span className="text-[10px] font-black">{game.score.away}</span>}
                         </div>
                       </div>
@@ -1469,7 +1473,7 @@ export default function Games({ user }: GamesProps) {
                     </p>
                     <p className="text-sm font-black uppercase italic 
                                  text-white leading-tight">
-                      {locationModalEvent.homeTeam} vs {locationModalEvent.awayTeam}
+                      {locationModalEvent.homeTeamId ? (teamNames[locationModalEvent.homeTeamId] || locationModalEvent.homeTeam) : locationModalEvent.homeTeam} vs {(locationModalEvent as any).awayTeamId ? (teamNames[(locationModalEvent as any).awayTeamId] || locationModalEvent.awayTeam) : locationModalEvent.awayTeam}
                     </p>
                   </div>
                 </div>
@@ -1544,33 +1548,21 @@ export default function Games({ user }: GamesProps) {
                 <div className="space-y-2">
                   <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest text-center mb-3">Open in Maps</p>
                   
-                  <a
-                    href={locationModalEvent.pinLocation
-                      ? `https://maps.apple.com/?daddr=${locationModalEvent.pinLocation.lat},${locationModalEvent.pinLocation.lng}`
-                      : `https://maps.apple.com/?q=${encodeURIComponent(locationModalEvent.location || '')}`
-                    }
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    onClick={() => setLocationModalEvent(null)}
-                    className="flex items-center justify-center gap-2 w-full h-12 bg-slate-900 text-white rounded-2xl text-[11px] font-black uppercase tracking-widest transition-all active:scale-[0.98] no-underline"
+                  <button
+                    onClick={() => { setLocationModalEvent(null); openExternal(locationModalEvent.pinLocation ? `https://maps.apple.com/?daddr=${locationModalEvent.pinLocation.lat},${locationModalEvent.pinLocation.lng}` : `https://maps.apple.com/?q=${encodeURIComponent(locationModalEvent.location || '')}`); }}
+                    className="flex items-center justify-center gap-2 w-full h-12 bg-slate-900 text-white rounded-2xl text-[11px] font-black uppercase tracking-widest transition-all active:scale-[0.98]"
                   >
                     <Navigation className="w-4 h-4" />
                     Apple Maps
-                  </a>
-                  
-                  <a
-                    href={locationModalEvent.pinLocation
-                      ? `https://www.google.com/maps/dir/?api=1&destination=${locationModalEvent.pinLocation.lat},${locationModalEvent.pinLocation.lng}`
-                      : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(locationModalEvent.location || '')}`
-                    }
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    onClick={() => setLocationModalEvent(null)}
-                    className="flex items-center justify-center gap-2 w-full h-12 bg-primary text-white rounded-2xl text-[11px] font-black uppercase tracking-widest transition-all active:scale-[0.98] no-underline"
+                  </button>
+
+                  <button
+                    onClick={() => { setLocationModalEvent(null); openExternal(locationModalEvent.pinLocation ? `https://www.google.com/maps/dir/?api=1&destination=${locationModalEvent.pinLocation.lat},${locationModalEvent.pinLocation.lng}` : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(locationModalEvent.location || '')}`); }}
+                    className="flex items-center justify-center gap-2 w-full h-12 bg-primary text-white rounded-2xl text-[11px] font-black uppercase tracking-widest transition-all active:scale-[0.98]"
                   >
                     <MapPin className="w-4 h-4" />
                     Google Maps
-                  </a>
+                  </button>
                 </div>
               </div>
             </motion.div>

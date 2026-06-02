@@ -11,6 +11,7 @@ import { MOCK_TEAMS } from "../constants";
 import StorageService from "../services/StorageService";
 import { Card, CardContent } from "./ui/card";
 import { db } from "../firebase";
+import { canSend, recordSend, trimMessage, MAX_MESSAGE_LENGTH } from "../utils/rateLimiter";
 import {
   collection,
   addDoc,
@@ -153,14 +154,25 @@ export default function Chat({ user, memberRoles, onChatOpen, onUnreadCount }: C
   }, [messages]);
 
   // ── Send message ──────────────────────────────────────────
+  const [rateLimitMsg, setRateLimitMsg] = useState<string | null>(null);
+
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!inputText.trim() || !selectedTeamId) return;
 
+    // Rate limit check
+    const check = canSend('chat');
+    if (!check.allowed) {
+      setRateLimitMsg(check.reason || 'Please wait');
+      setTimeout(() => setRateLimitMsg(null), 2000);
+      return;
+    }
+
     setIsSending(true);
     const roomId = `${selectedTeamId}_${selectedChannel.id}`;
-    const text = inputText.trim();
+    const text = trimMessage(inputText.trim());
     setInputText("");
+    recordSend('chat');
 
     // Optimistic local message
     const tempId = "temp-" + Date.now();
@@ -231,6 +243,13 @@ export default function Chat({ user, memberRoles, onChatOpen, onUnreadCount }: C
 
       mediaRecorder.onstop = async () => {
         if (chunks.length > 0 && recordingTime > 0 && selectedTeamId) {
+          const voiceCheck = canSend('chat');
+          if (!voiceCheck.allowed) {
+            setRateLimitMsg(voiceCheck.reason || 'Please wait');
+            setTimeout(() => setRateLimitMsg(null), 2000);
+            return;
+          }
+          recordSend('chat');
           const roomId = `${selectedTeamId}_${selectedChannel.id}`;
           const voiceText = "🎤 Voice Message (" + formatTime(recordingTime) + ")";
 
@@ -308,10 +327,10 @@ export default function Chat({ user, memberRoles, onChatOpen, onUnreadCount }: C
   }, [user]);
 
   const currentUser = user ? StorageService.getUserData(user.id) || user : null;
-  const chatTeams = [
+  const chatTeams = useMemo(() => [
     ...MOCK_TEAMS.filter(t => currentUser?.teamIds?.includes(t.id)),
     ...customTeams
-  ];
+  ], [currentUser?.teamIds?.join(','), customTeams]);
 
   useEffect(() => {
     const loadData = () => {
@@ -1323,8 +1342,9 @@ export default function Chat({ user, memberRoles, onChatOpen, onUnreadCount }: C
               </Button>
               <Input
                 value={inputText}
-                onChange={(e) => setInputText(e.target.value)}
+                onChange={(e) => setInputText(e.target.value.slice(0, MAX_MESSAGE_LENGTH))}
                 placeholder="Type a message..."
+                maxLength={MAX_MESSAGE_LENGTH}
                 className="flex-1 bg-slate-50 border-none rounded-xl focus-visible:ring-primary h-9 text-base disabled:opacity-50"
               />
               <Button
@@ -1336,6 +1356,19 @@ export default function Chat({ user, memberRoles, onChatOpen, onUnreadCount }: C
                 <Send className={`w-4 h-4 ${isSending ? "animate-pulse" : ""}`} />
               </Button>
             </motion.form>
+          )}
+        </AnimatePresence>
+        {/* Rate limit toast */}
+        <AnimatePresence>
+          {rateLimitMsg && (
+            <motion.div
+              initial={{ opacity: 0, y: 5 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 5 }}
+              className="absolute bottom-16 left-4 right-4 bg-slate-900 text-white text-[10px] font-bold text-center py-2 px-3 rounded-xl z-10"
+            >
+              {rateLimitMsg}
+            </motion.div>
           )}
         </AnimatePresence>
       </div>

@@ -19,15 +19,20 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "./ui/dialog";
-import { MOCK_SCHEDULE, MOCK_TEAMS, MOCK_LINEUP } from "../constants";
+import { MOCK_SCHEDULE, MOCK_TEAMS } from "../constants";
 import { User } from "../types";
 import StorageService, { AttendanceRecord } from "../services/StorageService";
+import { openExternal } from "../utils/openExternal";
+import { canSend, recordSend } from "../utils/rateLimiter";
 import FirestoreService from '../services/FirestoreService';
 import DefaultAvatar from "./DefaultAvatar";
 
 const getShortLocation = (location: string | undefined): string => {
   if (!location) return '';
-  return location.split(',')[0].trim();
+  const beforeComma = location.split(',')[0].trim();
+  const words = beforeComma.split(/\s+/);
+  if (words.length > 2) return words.slice(0, 2).join(' ');
+  return beforeComma;
 };
 
 interface ScheduleProps {
@@ -73,8 +78,10 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
   const [dpYear, setDpYear] = useState(currentYear);
   const [attendanceModalEvent, setAttendanceModalEvent] = useState<any>(null);
   const [scheduleTeamLogos, setScheduleTeamLogos] = useState<Record<string, string>>({});
+  const [scheduleTeamNames, setScheduleTeamNames] = useState<Record<string, string>>({});
   const [scheduleLogoErrors, setScheduleLogoErrors] = useState<Record<string, boolean>>({});
   const [reminderSentEventId, setReminderSentEventId] = useState<string | null>(null);
+  const [locationErrorMsg, setLocationErrorMsg] = useState<string | null>(null);
   const [locationModalEvent, setLocationModalEvent] = useState<any>(null);
   const [attendanceData, setAttendanceData] = useState<Record<string, AttendanceRecord[]>>({});
   const [scheduleSuccess, setScheduleSuccess] = useState(false);
@@ -142,15 +149,20 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
       setAttendanceData(data);
 
       const logos: Record<string, string> = {};
+      const names: Record<string, string> = {};
       const allStoredTeams = [
+        ...MOCK_TEAMS,
         ...StorageService.getTeams(),
         ...(StorageService.getCustomTeams ? StorageService.getCustomTeams() : []),
       ];
       allStoredTeams.forEach((t: any) => {
         const savedLogo = StorageService.getTeamLogo ? StorageService.getTeamLogo(t.id) : null;
         if (savedLogo) logos[t.id] = savedLogo;
+        const savedName = localStorage.getItem(`gameday_team_name_${t.id}`);
+        if (savedName) names[t.id] = savedName;
       });
       setScheduleTeamLogos(logos);
+      setScheduleTeamNames(names);
     };
 
     loadData();
@@ -514,7 +526,7 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
                               }`}
                             >
                               <span className="w-2 h-2 rounded-full shrink-0" style={{ background: selected ? '#fff' : teamColor }} />
-                              {team.name}
+                              {scheduleTeamNames[team.id] || team.name}
                             </button>
                           );
                         })}
@@ -683,7 +695,7 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
                 <div className="space-y-3">
                   <label className="text-[11px] font-black text-slate-900 uppercase italic tracking-[0.18em] px-1">Location (Optional)</label>
 
-                  {!newEvent.pinLocation && (
+                  {!newEvent.pinLocation && (<>
                     <div className="grid grid-cols-2 gap-3 mb-1">
                       <button
                         type="button"
@@ -716,7 +728,10 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
                                   .catch(() => applyLabel('Current Location'));
                               }
                             },
-                            () => alert('Unable to get your location. Please allow location access and try again.')
+                            () => {
+                              setLocationErrorMsg('Unable to get your location. Please allow location access and try again.');
+                              setTimeout(() => setLocationErrorMsg(null), 4000);
+                            }
                           );
                         }}
                         className="flex flex-col items-center gap-2 p-4 bg-slate-50 border-2 border-dashed border-slate-200 rounded-2xl text-slate-500 hover:border-primary hover:text-primary transition-all"
@@ -733,7 +748,25 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
                         <span className="text-[9px] font-black uppercase tracking-widest text-center">Enter Address</span>
                       </button>
                     </div>
-                  )}
+
+                    {/* Location error toast */}
+                    <AnimatePresence>
+                      {locationErrorMsg && (
+                        <motion.div
+                          initial={{ opacity: 0, y: -10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: -10 }}
+                          className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-2xl"
+                        >
+                          <span className="text-red-500 text-sm">⚠️</span>
+                          <p className="text-xs text-red-600 font-medium flex-1">{locationErrorMsg}</p>
+                          <button onClick={() => setLocationErrorMsg(null)} className="text-red-400 hover:text-red-600">
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </>)}
 
                   {/* Optional text input for address */}
                   <Input
@@ -1004,7 +1037,7 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
                   {Array.from({ length: daysInMonth }).map((_, i) => {
                     const day = i + 1;
                     const hasEvent = userEvents.some(e => eventMatchesDay(e.date, day));
-                    const isSelected = selectedDate === day && calendarYear === calendarYear && calendarMonth === calendarMonth;
+                    const isSelected = selectedDate === day;
                     const isToday = day === today && calendarYear === currentYear && calendarMonth === currentMonth;
                     return (
                       <button
@@ -1165,7 +1198,7 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
                           </div>
                           <div>
                             {(team || (event as any).teamName) && (
-                              <p className="text-[9px] font-black uppercase tracking-widest text-primary mb-0.5">{(team as any)?.name || (event as any).teamName}</p>
+                              <p className="text-[9px] font-black uppercase tracking-widest text-primary mb-0.5">{scheduleTeamNames[(team as any)?.id] || (team as any)?.name || (event as any).teamName}</p>
                             )}
                             <h4 className="font-bold text-slate-900 text-sm">{event.title}</h4>
                             <p className="text-[10px] text-slate-400 font-medium">{formatEventDate(event.date)} • {formatEventTime(event.time)}</p>
@@ -1351,24 +1384,42 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
                           <h5 className="text-[10px] font-black text-green-600 uppercase tracking-widest whitespace-nowrap">Going ({going.length})</h5>
                           <div className="h-px flex-1 bg-green-200" />
                         </div>
-                        {going.length === 0 ? <p className="text-[9px] text-slate-400 italic px-1">No one yet</p> : going.map((r, i) => (
-                          <div key={i} className="w-full flex items-center gap-3 p-3 bg-white rounded-2xl shadow-sm border border-green-400 h-14">
-                            <div className="w-8 h-8 rounded-full bg-green-50 flex items-center justify-center text-green-500 shrink-0"><Check className="w-4 h-4" /></div>
-                            <p className="text-xs font-black text-slate-900 italic truncate">{r.userName || r.userId || 'Unknown'}</p>
-                          </div>
-                        ))}
+                        {going.length === 0 ? <p className="text-[9px] text-slate-400 italic px-1">No one yet</p> : going.map((r, i) => {
+                          const allChildren = JSON.parse(localStorage.getItem('gameday_children') || '[]');
+                          const childMatch = allChildren.find((c: any) => c.id === r.userId);
+                          return (
+                            <div key={i} className="w-full flex items-center gap-3 p-3 bg-white rounded-2xl shadow-sm border border-green-400 h-14">
+                              <div className="w-8 h-8 rounded-full bg-green-50 flex items-center justify-center text-green-500 shrink-0"><Check className="w-4 h-4" /></div>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-xs font-black text-slate-900 italic truncate">{childMatch?.name || StorageService.getUserData(r.userId)?.name || r.userName || r.userId || 'Unknown'}</p>
+                                {childMatch && (
+                                  <p className="text-[10px] font-medium text-slate-400 uppercase tracking-widest leading-none mt-1">Parent: {childMatch.parentNames?.[0] || 'Parent'}</p>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
                       <div className="space-y-2">
                         <div className="flex items-center gap-3 px-1">
                           <h5 className="text-[10px] font-black text-red-600 uppercase tracking-widest whitespace-nowrap">Absent ({absent.length})</h5>
                           <div className="h-px flex-1 bg-red-200" />
                         </div>
-                        {absent.length === 0 ? <p className="text-[9px] text-slate-400 italic px-1">No one yet</p> : absent.map((r, i) => (
-                          <div key={i} className="w-full flex items-center gap-3 p-3 bg-white rounded-2xl shadow-sm border border-red-400 h-14">
-                            <div className="w-8 h-8 rounded-full bg-red-50 flex items-center justify-center text-red-400 shrink-0"><X className="w-4 h-4" /></div>
-                            <p className="text-xs font-black text-slate-900 italic truncate">{r.userName || r.userId || 'Unknown'}</p>
-                          </div>
-                        ))}
+                        {absent.length === 0 ? <p className="text-[9px] text-slate-400 italic px-1">No one yet</p> : absent.map((r, i) => {
+                          const allChildren = JSON.parse(localStorage.getItem('gameday_children') || '[]');
+                          const childMatch = allChildren.find((c: any) => c.id === r.userId);
+                          return (
+                            <div key={i} className="w-full flex items-center gap-3 p-3 bg-white rounded-2xl shadow-sm border border-red-400 h-14">
+                              <div className="w-8 h-8 rounded-full bg-red-50 flex items-center justify-center text-red-400 shrink-0"><X className="w-4 h-4" /></div>
+                              <div className="flex-1 min-w-0">
+                                <p className="text-xs font-black text-slate-900 italic truncate">{childMatch?.name || StorageService.getUserData(r.userId)?.name || r.userName || r.userId || 'Unknown'}</p>
+                                {childMatch && (
+                                  <p className="text-[10px] font-medium text-slate-400 uppercase tracking-widest leading-none mt-1">Parent: {childMatch.parentNames?.[0] || 'Parent'}</p>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
                     </>
                   );
@@ -1379,6 +1430,9 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
                   <button
                     onClick={() => {
                       if (!attendanceModalEvent) return;
+                      const check = canSend('reminder');
+                      if (!check.allowed) return;
+                      recordSend('reminder');
                       StorageService.addAnnouncement({
                         senderId: user?.id || 'coach',
                         senderName: user?.name || 'Coach',
@@ -1446,17 +1500,13 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
               )}
               <div className="p-5 space-y-4">
                 <p className="text-[13px] font-black uppercase italic text-slate-900">{locationModalEvent.pinLocation?.label || locationModalEvent.location || 'Location not set'}</p>
-                <a
-                  href={locationModalEvent.pinLocation
-                    ? `https://www.google.com/maps/dir/?api=1&destination=${locationModalEvent.pinLocation.lat},${locationModalEvent.pinLocation.lng}`
-                    : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(locationModalEvent.location || '')}`
-                  }
-                  target="_blank" rel="noopener noreferrer"
-                  className="flex items-center justify-center gap-2 w-full h-14 bg-primary text-white rounded-2xl text-[11px] font-black uppercase tracking-widest transition-all active:scale-[0.98] no-underline"
+                <button
+                  onClick={() => openExternal(locationModalEvent.pinLocation ? `https://www.google.com/maps/dir/?api=1&destination=${locationModalEvent.pinLocation.lat},${locationModalEvent.pinLocation.lng}` : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(locationModalEvent.location || '')}`)}
+                  className="flex items-center justify-center gap-2 w-full h-14 bg-primary text-white rounded-2xl text-[11px] font-black uppercase tracking-widest transition-all active:scale-[0.98]"
                 >
                   <Navigation className="w-5 h-5" />
                   Get Directions
-                </a>
+                </button>
               </div>
             </motion.div>
           </>

@@ -64,7 +64,8 @@ export default function SupporterHome({ user, onTabChange }: SupporterHomeProps)
       const userClubId = user?.clubId || null;
       const filteredAnnouncements = allAnnouncements.filter(a =>
         a.teamId === user?.linkedTeamId ||
-        (a.teamId === 'all' && userClubId && a.clubId === userClubId)
+        (a.teamId === 'all' && userClubId && a.clubId === userClubId) ||
+        (a.teamId === 'direct' && a.recipientId === user?.id)
       );
       setAnnouncements(filteredAnnouncements);
 

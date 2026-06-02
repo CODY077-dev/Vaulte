@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Card, CardContent } from "./ui/card";
 import { Badge } from "./ui/badge";
-import { ChevronRight, Plus, Activity, Building2, Dribbble, CircleDot, Search, Users, User as UserIcon, Calendar, FileText, MapPin, Clock, ChevronLeft, Download, ExternalLink, Trophy, ChevronDown, AlertCircle, UserPlus, ShieldCheck, UserCog, Image, FolderOpen, LogIn, CheckCircle2, Key, X, Copy, Target, Repeat, Edit2, Minus, GripVertical, Archive, Save, PartyPopper, Pencil, Trash2, LogOut } from "lucide-react";
+import { ChevronRight, Plus, Activity, Building2, Dribbble, CircleDot, Search, Users, User as UserIcon, Calendar, FileText, MapPin, Clock, ChevronLeft, Download, ExternalLink, Trophy, ChevronDown, AlertCircle, UserPlus, ShieldCheck, UserCog, Image, FolderOpen, LogIn, CheckCircle2, Key, X, Copy, Target, Repeat, Edit2, Minus, GripVertical, Archive, Save, PartyPopper, Pencil, Trash2, LogOut, Mail, Phone, Heart, Upload, File } from "lucide-react";
 import { cn } from "../lib/utils";
 import { motion, AnimatePresence } from "motion/react";
 import DefaultAvatar from "./DefaultAvatar";
@@ -17,7 +17,7 @@ import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs";
 
-import { MOCK_TEAMS, MOCK_LINEUP, MOCK_SCHEDULE, MOCK_CLUB } from "../constants";
+import { MOCK_TEAMS, MOCK_SCHEDULE, MOCK_CLUB } from "../constants";
 import { User } from "../types";
 import StorageService from "../services/StorageService";
 import { doc, updateDoc, arrayUnion, setDoc } from 'firebase/firestore';
@@ -185,6 +185,8 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
   const _now = new Date();
   const today = _now.getDate();
   const [selectedDate, setSelectedDate] = useState<number>(today);
+  const todayDateStr = `${_now.getFullYear()}-${String(_now.getMonth()+1).padStart(2,'0')}-${String(_now.getDate()).padStart(2,'0')}`;
+  const [selectedDateStr, setSelectedDateStr] = useState<string>(todayDateStr);
 
   const eventMatchesDay = (eventDate: string, day: number): boolean => {
     if (!eventDate) return false;
@@ -255,15 +257,21 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
   const [editTeamLogo, setEditTeamLogo] = useState<string | null>(null);
   const [editTeamLogoFile, setEditTeamLogoFile] = useState<File | null>(null);
   const [isLeaveModalOpen, setIsLeaveModalOpen] = useState(false);
+  const [isOptionsOpen, setIsOptionsOpen] = useState(false);
   const [isDeleteTeamModalOpen, setIsDeleteTeamModalOpen] = useState(false);
   const [isDeletingTeam, setIsDeletingTeam] = useState(false);
+  const [showArchiveConfirm, setShowArchiveConfirm] = useState(false);
+  const [teamErrorMsg, setTeamErrorMsg] = useState<string | null>(null);
   const [isSquadEditMode, setIsSquadEditMode] = useState(false);
   const [rosterMembers, setRosterMembers] = useState<any[]>([]);
   const [memberToRemove, setMemberToRemove] = useState<any>(null);
   const [showRemoveModal, setShowRemoveModal] = useState(false);
+  const [viewMemberProfile, setViewMemberProfile] = useState<any>(null);
   const [copied, setCopied] = useState(false);
   const [logoErrors, setLogoErrors] = useState<Record<string, boolean>>({});
   const [teamResources, setTeamResources] = useState<any[]>([]);
+  const [deleteResourceId, setDeleteResourceId] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [isTeamSearchingLocation, setIsTeamSearchingLocation] = useState(false);
   const [locationMode, setLocationMode] = useState<'pin' | 'address' | 'text'>('pin');
   const [teamMapPin, setTeamMapPin] = useState<{ lat: number; lng: number } | null>(null);
@@ -373,6 +381,10 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
 
       const savedResources = JSON.parse(localStorage.getItem(`gameday_resources_${selectedTeamId}`) || '[]');
       setTeamResources(savedResources);
+      // Hydrate from Firestore in background
+      StorageService.hydrateTeamResources(selectedTeamId).then(resources => {
+        if (resources.length > 0) setTeamResources(resources);
+      }).catch(console.warn);
     }
   }, [selectedTeamId]);
 
@@ -584,6 +596,60 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
     window.dispatchEvent(new Event('gameday_update'));
   };
 
+  const [uploadingResources, setUploadingResources] = useState(false);
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || !selectedTeamId) return;
+    setUploadingResources(true);
+
+    for (const file of Array.from(files)) {
+      try {
+        const resource = await StorageService.uploadTeamResource(selectedTeamId, file);
+        setTeamResources(prev => [resource, ...prev.filter(r => r.id !== resource.id)]);
+      } catch (err) {
+        console.error('Upload failed for', file.name, err);
+      }
+    }
+    setUploadingResources(false);
+    // Reset input so same file can be uploaded again
+    e.target.value = '';
+  };
+
+  const handleDeleteResource = async (resourceId: string) => {
+    if (!selectedTeamId) return;
+    const resource = teamResources.find(r => r.id === resourceId);
+    try {
+      await StorageService.deleteTeamResource(selectedTeamId, resourceId, resource?.storagePath);
+      setTeamResources(prev => prev.filter(r => r.id !== resourceId));
+    } catch (err) {
+      console.error('Delete failed:', err);
+    }
+    setDeleteResourceId(null);
+  };
+
+  const handleDownloadResource = (resource: any) => {
+    // Use Firebase Storage URL or fallback to base64 data
+    const url = resource.url || resource.data;
+    if (!url) return;
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = resource.name;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const getFileIcon = (ext: string) => {
+    if (['pdf'].includes(ext)) return <FileText className="w-6 h-6 text-red-500" />;
+    if (['doc', 'docx'].includes(ext)) return <FileText className="w-6 h-6 text-blue-500" />;
+    if (['xls', 'xlsx', 'csv'].includes(ext)) return <FileText className="w-6 h-6 text-green-500" />;
+    if (['png', 'jpg', 'jpeg', 'gif', 'webp'].includes(ext)) return <Image className="w-6 h-6 text-purple-500" />;
+    return <File className="w-6 h-6 text-slate-400" />;
+  };
+
   const freshUser = JSON.parse(localStorage.getItem('gameday_user') || '{}');
   const currentUser = user ? StorageService.getUserData(user.id) || user : null;
   const allTeamIds = [...new Set([...(user?.teamIds || []), ...(freshUser?.teamIds || []), ...(currentUser?.teamIds || [])])];
@@ -676,6 +742,16 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                     </div>
                   </div>
 
+                  {/* Options button — visible to all members */}
+                  {!isTeamCoach && (
+                    <button
+                      onClick={() => setIsOptionsOpen(true)}
+                      className="px-3 py-1.5 rounded-full bg-slate-100 hover:bg-slate-200 text-[10px] font-black uppercase tracking-widest text-slate-500 transition-all shrink-0"
+                    >
+                      Options
+                    </button>
+                  )}
+
                   {isTeamCoach && (
                     <div className="flex items-center gap-2 shrink-0">
                       {/* Edit button */}
@@ -752,7 +828,7 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                                         Select Member to promote to {addMemberType.toUpperCase()}
                                       </h4>
                                       <div className="grid gap-2 max-h-[300px] overflow-y-auto pr-2">
-                                        {MOCK_LINEUP.map((player) => (
+                                        {rosterMembers.map((player) => (
                                           <button
                                             key={player.id}
                                             onClick={() => {
@@ -762,10 +838,17 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                                             }}
                                             className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl hover:bg-slate-100 transition-colors text-left"
                                           >
-                                            <DefaultAvatar name={player.name} size="md" className="rounded-lg" />
+                                            {player.avatar ? (
+                                              <img src={player.avatar} alt={player.name} className="w-10 h-10 rounded-lg object-cover" />
+                                            ) : (
+                                              <DefaultAvatar name={player.name} size="md" className="rounded-lg" />
+                                            )}
                                             <div className="flex-1 min-w-0">
                                               <p className="text-xs font-bold text-slate-900 truncate">{player.name}</p>
-                                              <p className="text-[9px] font-bold text-slate-400 uppercase">{player.position}</p>
+                                              {(() => {
+                                                const pos = StorageService.getUserData(player.id)?.position;
+                                                return pos ? <p className="text-[9px] font-bold text-slate-400 uppercase">{pos}</p> : null;
+                                              })()}
                                             </div>
                                             {memberRoles[player.id] === addMemberType && (
                                               <Badge className="bg-primary text-[8px] font-black">ACTIVE</Badge>
@@ -947,23 +1030,26 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                     </p>
                   </div>
                   <button
-                    onClick={() => {
+                    onClick={async () => {
                       const code = selectedTeam?.joinCode || selectedTeam?.id?.toUpperCase().slice(0, 7) || '';
-                      const doCopy = (text: string) => {
-                        if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text);
-                        const ta = document.createElement('textarea'); ta.value = text; ta.style.position = 'fixed'; ta.style.left = '-9999px';
+                      try {
+                        if (navigator.clipboard && window.isSecureContext) {
+                          await navigator.clipboard.writeText(code);
+                        } else {
+                          const ta = document.createElement('textarea'); ta.value = code; ta.style.position = 'fixed'; ta.style.left = '-9999px';
+                          document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta);
+                        }
+                      } catch (e) {
+                        const ta = document.createElement('textarea'); ta.value = code; ta.style.position = 'fixed'; ta.style.left = '-9999px';
                         document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta);
-                        return Promise.resolve();
-                      };
-                      doCopy(code).then(() => {
-                        setCopied(true);
-                        setTimeout(() => setCopied(false), 2000);
-                      });
+                      }
+                      setCopied(true);
+                      setTimeout(() => setCopied(false), 2000);
                     }}
-                    className="flex items-center gap-1.5 bg-slate-50 rounded-xl px-3 py-2 text-[9px] font-black text-slate-500 uppercase tracking-widest hover:bg-slate-100 active:scale-95 transition-all"
+                    className={`flex items-center gap-1.5 rounded-xl px-3 py-2 text-[9px] font-black uppercase tracking-widest active:scale-95 transition-all ${copied ? 'bg-green-50 text-green-600' : 'bg-slate-50 text-slate-500 hover:bg-slate-100'}`}
                   >
-                    <Copy className="w-3.5 h-3.5" />
-                    {copied ? '✓ COPIED' : 'COPY'}
+                    {copied ? <CheckCircle2 className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                    {copied ? 'COPIED' : 'COPY'}
                   </button>
                 </div>
 
@@ -1070,24 +1156,74 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                   <ChevronLeft className="w-5 h-5" />
                 </Button>
                 <h2 className="text-lg font-black text-slate-900 uppercase italic flex-1">Team Resources</h2>
+                {(userRole === 'coach' || userRole === 'club' || (() => { const r = localStorage.getItem(`gameday_role_${user?.id}_${selectedTeamId}`); return r === 'coach' || r === 'manager'; })()) && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="rounded-full text-primary"
+                  >
+                    <Plus className="w-5 h-5" />
+                  </Button>
+                )}
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.png,.jpg,.jpeg,.gif,.webp"
+                  onChange={handleFileUpload}
+                  className="hidden"
+                />
               </div>
               <div className="p-4 space-y-6">
+                {/* Upload Progress */}
+                {uploadingResources && (
+                  <div className="flex items-center justify-center gap-3 py-6">
+                    <div className="w-5 h-5 border-2 border-primary/30 border-t-primary rounded-full animate-spin" />
+                    <p className="text-sm font-bold text-slate-500">Uploading...</p>
+                  </div>
+                )}
+
+                {/* Upload Area - shown when no files */}
+                {teamResources.length === 0 && !uploadingResources && (userRole === 'coach' || userRole === 'club' || (() => { const r = localStorage.getItem(`gameday_role_${user?.id}_${selectedTeamId}`); return r === 'coach' || r === 'manager'; })()) && (
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    className="w-full flex flex-col items-center justify-center py-10 border-2 border-dashed border-slate-200 rounded-2xl hover:border-primary/40 hover:bg-primary/5 transition-all active:scale-[0.98]"
+                  >
+                    <div className="w-14 h-14 rounded-2xl bg-primary/10 flex items-center justify-center mb-3">
+                      <Upload className="w-7 h-7 text-primary" />
+                    </div>
+                    <p className="text-sm font-bold text-slate-700">Upload Documents</p>
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">PDF, Word, Excel, Images & more</p>
+                  </button>
+                )}
+
                 {/* Files Section */}
                 {teamResources.length > 0 && (
                   <div className="space-y-3">
-                    <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest px-1">Files</h3>
+                    <div className="flex items-center justify-between px-1">
+                      <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest">Files</h3>
+                      <span className="text-[10px] font-black text-slate-300 uppercase tracking-widest">{teamResources.length} file{teamResources.length !== 1 ? 's' : ''}</span>
+                    </div>
                     {teamResources.map((d: any) => (
                       <div key={d.id} className="flex items-center gap-4 p-4 bg-slate-50 rounded-2xl">
-                        <div className="w-12 h-12 rounded-xl bg-white shadow-sm flex items-center justify-center text-slate-400">
-                          <FileText className="w-6 h-6" />
+                        <div className="w-12 h-12 rounded-xl bg-white shadow-sm flex items-center justify-center">
+                          {getFileIcon(d.ext || '')}
                         </div>
                         <div className="flex-1 min-w-0">
                           <h4 className="font-bold text-slate-900 text-sm truncate">{d.name}</h4>
                           <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{d.size} • {d.type}</p>
                         </div>
-                        <Button variant="ghost" size="icon" className="text-slate-300">
-                          <Download className="w-5 h-5" />
-                        </Button>
+                        <div className="flex items-center gap-1">
+                          <Button variant="ghost" size="icon" className="text-slate-400 hover:text-primary" onClick={() => handleDownloadResource(d)}>
+                            <Download className="w-4 h-4" />
+                          </Button>
+                          {(userRole === 'coach' || userRole === 'club' || (() => { const r = localStorage.getItem(`gameday_role_${user?.id}_${selectedTeamId}`); return r === 'coach' || r === 'manager'; })()) && (
+                            <Button variant="ghost" size="icon" className="text-slate-400 hover:text-red-500" onClick={() => setDeleteResourceId(d.id)}>
+                              <Trash2 className="w-4 h-4" />
+                            </Button>
+                          )}
+                        </div>
                       </div>
                     ))}
                   </div>
@@ -1110,6 +1246,52 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                   <ChevronRight className="w-4 h-4 text-slate-300 flex-shrink-0" />
                 </button>
               </div>
+
+              {/* Delete Resource Confirmation */}
+              <AnimatePresence>
+                {deleteResourceId && (
+                  <>
+                    <motion.div
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      className="fixed inset-0 bg-black/50 z-[60]"
+                      onClick={() => setDeleteResourceId(null)}
+                    />
+                    <motion.div
+                      initial={{ opacity: 0, scale: 0.95, y: 20 }}
+                      animate={{ opacity: 1, scale: 1, y: 0 }}
+                      exit={{ opacity: 0, scale: 0.95, y: 20 }}
+                      className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[70] w-[92%] max-w-sm bg-white rounded-[2rem] shadow-2xl overflow-hidden"
+                    >
+                      <div className="bg-slate-900 p-6 flex items-center justify-between">
+                        <h2 className="text-white text-sm font-black uppercase tracking-widest">Delete File</h2>
+                        <button onClick={() => setDeleteResourceId(null)} className="text-white/70 hover:text-white">
+                          <X className="w-5 h-5" />
+                        </button>
+                      </div>
+                      <div className="p-6 space-y-4">
+                        <p className="text-sm text-slate-600">Are you sure you want to delete this file? This action cannot be undone.</p>
+                        <div className="flex gap-3">
+                          <Button
+                            variant="outline"
+                            className="flex-1 rounded-xl"
+                            onClick={() => setDeleteResourceId(null)}
+                          >
+                            Cancel
+                          </Button>
+                          <Button
+                            className="flex-1 rounded-xl bg-red-500 hover:bg-red-600 text-white"
+                            onClick={() => handleDeleteResource(deleteResourceId)}
+                          >
+                            Delete
+                          </Button>
+                        </div>
+                      </div>
+                    </motion.div>
+                  </>
+                )}
+              </AnimatePresence>
 
               {/* Archive Detail Modal */}
               <AnimatePresence>
@@ -1260,7 +1442,10 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                                 <div key={i} className="flex items-center gap-2 py-1">
                                   <span className="text-[10px] font-bold text-slate-400 w-5 text-right">{i + 1}</span>
                                   <span className="text-[11px] font-medium text-slate-700">{player.name || player}</span>
-                                  {player.position && <span className="text-[9px] font-bold text-slate-400 ml-auto">{player.position}</span>}
+                                  {(() => {
+                                    const pos = StorageService.getUserData(player.id)?.position || player.position;
+                                    return pos ? <span className="text-[9px] font-bold text-slate-400 ml-auto">{pos}</span> : null;
+                                  })()}
                                 </div>
                               ))}
                               {(!squad.players || squad.players.filter(Boolean).length === 0) && (
@@ -1387,9 +1572,13 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                       </button>
                     );
                   })()}
-                  {MOCK_LINEUP.filter(p => memberRoles[p.id] === 'coach').map((player, idx) => (
+                  {rosterMembers.filter(p => memberRoles[p.id] === 'coach').map((player, idx) => (
                     <div key={player.id || idx} className="flex items-center gap-4 p-4 bg-slate-50 rounded-2xl">
-                      <DefaultAvatar name={player.name} size="md" className="rounded-xl border-2 border-white shadow-sm" />
+                      {player.avatar ? (
+                        <img src={player.avatar} alt={player.name} className="w-10 h-10 rounded-xl border-2 border-white shadow-sm object-cover" />
+                      ) : (
+                        <DefaultAvatar name={player.name} size="md" className="rounded-xl border-2 border-white shadow-sm" />
+                      )}
                       <div className="flex-1">
                         <h4 className="font-bold text-slate-900 text-sm">{player.name}</h4>
                         <p className="text-[9px] font-black text-primary uppercase tracking-widest">Coach</p>
@@ -1413,12 +1602,16 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                 </div>
 
                 {/* Managers Section */}
-                {MOCK_LINEUP.filter(p => memberRoles[p.id] === 'manager').length > 0 && (
+                {rosterMembers.filter(p => memberRoles[p.id] === 'manager').length > 0 && (
                   <div className="space-y-3">
                     <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest px-2">Managers</h3>
-                    {MOCK_LINEUP.filter(p => memberRoles[p.id] === 'manager').map((player) => (
+                    {rosterMembers.filter(p => memberRoles[p.id] === 'manager').map((player) => (
                       <div key={player.id} className="flex items-center gap-4 p-4 bg-slate-50 rounded-2xl">
-                        <DefaultAvatar name={player.name} size="md" className="rounded-xl border-2 border-white shadow-sm" />
+                        {player.avatar ? (
+                          <img src={player.avatar} alt={player.name} className="w-10 h-10 rounded-xl border-2 border-white shadow-sm object-cover" />
+                        ) : (
+                          <DefaultAvatar name={player.name} size="md" className="rounded-xl border-2 border-white shadow-sm" />
+                        )}
                         <div className="flex-1">
                           <h4 className="font-bold text-slate-900 text-sm">{player.name}</h4>
                           <p className="text-[9px] font-black text-amber-500 uppercase tracking-widest">Manager</p>
@@ -1446,13 +1639,15 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                   {(() => {
                     const allChildren = JSON.parse(localStorage.getItem('gameday_children') || '[]');
                     const teamChildren = allChildren.filter((c: any) => c.teamIds?.includes(selectedTeam?.id));
+                    const childIdSet = new Set(teamChildren.map((c: any) => c.id));
+                    const adultMembers = rosterMembers.filter((m: any) => !childIdSet.has(m.id));
                     return (
                       <div className="flex justify-between items-center px-2 mb-3">
                         <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">
                           {(() => {
                             const cId = selectedTeam?.coachId || selectedTeam?.createdBy || 'coach-sarah';
-                            const coachInRoster = rosterMembers.some(m => m.id === cId);
-                            return (coachInRoster ? rosterMembers.length : rosterMembers.length + 1) + teamChildren.length;
+                            const coachInRoster = adultMembers.some(m => m.id === cId);
+                            return (coachInRoster ? adultMembers.length : adultMembers.length + 1) + teamChildren.length;
                           })()} Members
                         </span>
                         <div className="relative w-32">
@@ -1463,10 +1658,20 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                     );
                   })()}
                   {(() => {
+                    // Filter out child IDs from regular members to prevent duplicates
+                    // (children show in their own section below with parent info)
+                    const allChildrenData = JSON.parse(localStorage.getItem('gameday_children') || '[]');
+                    const teamChildIds = new Set(
+                      allChildrenData
+                        .filter((c: any) => c.teamIds?.includes(selectedTeam?.id))
+                        .map((c: any) => c.id)
+                    );
+                    const filteredRoster = rosterMembers.filter((m: any) => !teamChildIds.has(m.id));
+
                     // Include the coach in the members list if not already present
                     const coachId = selectedTeam?.coachId || selectedTeam?.createdBy || 'coach-sarah';
-                    const coachAlreadyInRoster = rosterMembers.some(m => m.id === coachId);
-                    const allMembers = coachAlreadyInRoster ? rosterMembers : (() => {
+                    const coachAlreadyInRoster = filteredRoster.some(m => m.id === coachId);
+                    const allMembers = coachAlreadyInRoster ? filteredRoster : (() => {
                       const coachData = StorageService.getUserData(coachId);
                       const coachEntry = {
                         id: coachId,
@@ -1475,7 +1680,7 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                         role: 'Coach',
                         position: 'Coach',
                       };
-                      return [coachEntry, ...rosterMembers];
+                      return [coachEntry, ...filteredRoster];
                     })();
 
                     if (allMembers.length === 0) return (
@@ -1490,7 +1695,20 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                     return allMembers.map((member, idx) => (
                       <div 
                         key={member.id || idx} 
-                        onClick={() => !isSquadEditMode && onTabChange?.('profile', member.id)}
+                        onClick={() => {
+                          if (isSquadEditMode) return;
+                          // Build profile data for this member
+                          const profileData = StorageService.getUserData(member.id);
+                          const activeUserObj = JSON.parse(localStorage.getItem('gameday_user') || '{}');
+                          const isActiveUser = activeUserObj.id === member.id;
+                          const mergedData = {
+                            ...member,
+                            ...(profileData || {}),
+                            ...(isActiveUser ? activeUserObj : {}),
+                            name: member.name || profileData?.name || (isActiveUser ? activeUserObj.name : member.id),
+                          };
+                          setViewMemberProfile(mergedData);
+                        }}
                         className="flex items-center gap-4 p-4 bg-slate-50 rounded-2xl group active:scale-[0.98] transition-all cursor-pointer"
                       >
                         <DefaultAvatar src={member.avatar} name={member.name} size="md" className="rounded-xl border-2 border-white shadow-sm" />
@@ -1500,9 +1718,19 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                           </div>
                           <div className="flex items-center gap-2">
                             <span className="text-[9px] font-bold text-primary uppercase tracking-wider">
-                              {member.role === 'player' || member.role === 'Player' ? 'Member' : (member.position || member.role || 'Member')}
+                              {member.role === 'Coach' || member.role === 'coach'
+                                ? 'Coach'
+                                : (() => {
+                                    const profileData = StorageService.getUserData(member.id);
+                                    const profilePosition = profileData?.position;
+                                    return profilePosition || member.position || 'Member';
+                                  })()
+                              }
                             </span>
                           </div>
+                          {member.parentName && (
+                            <p className="text-[10px] text-slate-400 italic">Parent: {member.parentName}</p>
+                          )}
                         </div>
                         {isSquadEditMode ? (
                           <button
@@ -1526,7 +1754,26 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                     const all = JSON.parse(localStorage.getItem('gameday_children') || '[]');
                     const teamChildren = all.filter((c: any) => c.teamIds?.includes(selectedTeam?.id));
                     return teamChildren.map((child: any, idx: number) => (
-                      <div key={child.id || idx} className="flex items-center gap-4 p-4 bg-slate-50 rounded-2xl">
+                      <div
+                        key={child.id || idx}
+                        onClick={() => {
+                          if (isSquadEditMode) return;
+                          // Get parent profile data for child view
+                          const parentId = child.parentIds?.[0];
+                          const parentData = parentId ? StorageService.getUserData(parentId) : null;
+                          const parentActiveUser = parentId ? JSON.parse(localStorage.getItem('gameday_user') || '{}') : null;
+                          const isParentActive = parentActiveUser?.id === parentId;
+                          const parentInfo = parentData || (isParentActive ? parentActiveUser : null);
+                          setViewMemberProfile({
+                            ...child,
+                            isChild: true,
+                            parentName: child.parentNames?.join(' & ') || parentInfo?.name || 'Parent',
+                            parentEmail: parentInfo?.email || '',
+                            parentPhone: parentInfo?.phone || '',
+                          });
+                        }}
+                        className="flex items-center gap-4 p-4 bg-slate-50 rounded-2xl cursor-pointer active:scale-[0.98] transition-all"
+                      >
                         <DefaultAvatar name={child.name} size="md" className="rounded-xl border-2 border-white shadow-sm" />
                         <div className="flex-1">
                           <h4 className="font-bold text-slate-900 text-sm">{child.name}</h4>
@@ -1646,11 +1893,12 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                         {Array.from({ length: daysInMonth }).map((_, i) => {
                           const day = i + 1;
                           const hasEvent = MOCK_SCHEDULE.some(e => e.teamId === selectedTeamId && e.date.includes(day.toString()));
-                          const isSelected = selectedDate === day;
+                          const monthDateStr = `${calendarYear}-${String(calendarMonth+1).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+                          const isSelected = selectedDateStr === monthDateStr;
                           return (
                             <button
                               key={i}
-                              onClick={() => setSelectedDate(day)}
+                              onClick={() => { setSelectedDate(day); setSelectedDateStr(monthDateStr); }}
                               className={`aspect-square rounded-2xl flex flex-col items-center justify-center text-xs font-bold relative transition-all active:scale-90 ${
                                 isSelected
                                   ? 'bg-primary text-white shadow-lg shadow-primary/30'
@@ -1671,22 +1919,25 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                       {/* 4 Cards on Top - Starts from Today */}
                       <div className="grid grid-cols-2 gap-3">
                         {Array.from({ length: 4 }).map((_, i) => {
-                          const day = Math.min(30, today + i);
-                          const dayEvents = [...MOCK_SCHEDULE, ...teamRealEvents].filter(e => e.teamId === selectedTeamId && eventMatchesDay(e.date, day));
-                          const dayName = new Date(calendarYear, calendarMonth, day).toLocaleDateString('en-US', { weekday: 'short' }).toUpperCase();
+                          const dateObj = new Date(calendarYear, calendarMonth, today + i);
+                          const day = dateObj.getDate();
+                          const dateStr = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                          const dayEvents = [...MOCK_SCHEDULE, ...teamRealEvents].filter(e => e.teamId === selectedTeamId && e.date === dateStr);
+                          const dayName = dateObj.toLocaleDateString('en-US', { weekday: 'short' }).toUpperCase();
+                          const isSelected = selectedDateStr === dateStr;
                           return (
-                            <button 
+                            <button
                               key={i}
-                              onClick={() => setSelectedDate(day)}
+                              onClick={() => { setSelectedDate(day); setSelectedDateStr(dateStr); setCalendarMonth(dateObj.getMonth()); setCalendarYear(dateObj.getFullYear()); }}
                               className={`p-4 rounded-[2rem] text-left transition-all active:scale-95 border-2 ${
-                                selectedDate === day ? 'bg-primary border-primary shadow-lg shadow-primary/20' : 'bg-white border-transparent'
+                                isSelected ? 'bg-primary border-primary shadow-lg shadow-primary/20' : 'bg-white border-transparent'
                               }`}
                             >
                               <div className="flex justify-between items-start mb-2">
-                                <span className={`text-[10px] font-black uppercase tracking-widest ${selectedDate === day ? 'text-white' : 'text-slate-900'}`}>
+                                <span className={`text-[10px] font-black uppercase tracking-widest ${isSelected ? 'text-white' : 'text-slate-900'}`}>
                                   {dayName}
                                 </span>
-                                <span className={`text-sm font-black italic ${selectedDate === day ? 'text-white' : 'text-slate-900'}`}>
+                                <span className={`text-sm font-black italic ${isSelected ? 'text-white' : 'text-slate-900'}`}>
                                   {day}
                                 </span>
                               </div>
@@ -1695,13 +1946,13 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                                   Object.entries(getTeamEventTypeCounts(dayEvents)).map(([type, count]) => {
                                     const style = TEAM_EVENT_TYPE_STYLES[type as keyof typeof TEAM_EVENT_TYPE_STYLES] || TEAM_EVENT_TYPE_STYLES.event;
                                     return (
-                                      <span key={type} className={`inline-flex items-center justify-center w-5 h-5 rounded-md text-[9px] font-black ring-1 ring-white/60 ${selectedDate === day ? `${style.selectedBg} ${style.selectedText}` : `${style.bg} ${style.text}`}`}>
+                                      <span key={type} className={`inline-flex items-center justify-center w-5 h-5 rounded-md text-[9px] font-black ring-1 ring-white/60 ${isSelected ? `${style.selectedBg} ${style.selectedText}` : `${style.bg} ${style.text}`}`}>
                                         {count}
                                       </span>
                                     );
                                   })
                                 ) : (
-                                  <span className={`text-[9px] font-bold italic ${selectedDate === day ? 'text-white/40' : 'text-slate-300'}`}>No events</span>
+                                  <span className={`text-[9px] font-bold italic ${isSelected ? 'text-white/40' : 'text-slate-300'}`}>No events</span>
                                 )}
                               </div>
                             </button>
@@ -1711,22 +1962,25 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                       {/* 3 Cards on Bottom - Next 3 days */}
                       <div className="grid grid-cols-3 gap-3">
                         {Array.from({ length: 3 }).map((_, i) => {
-                          const day = Math.min(30, today + 4 + i);
-                          const dayEvents = [...MOCK_SCHEDULE, ...teamRealEvents].filter(e => e.teamId === selectedTeamId && eventMatchesDay(e.date, day));
-                          const dayName = new Date(calendarYear, calendarMonth, day).toLocaleDateString('en-US', { weekday: 'short' }).toUpperCase();
+                          const dateObj = new Date(calendarYear, calendarMonth, today + 4 + i);
+                          const day = dateObj.getDate();
+                          const dateStr = `${dateObj.getFullYear()}-${String(dateObj.getMonth() + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+                          const dayEvents = [...MOCK_SCHEDULE, ...teamRealEvents].filter(e => e.teamId === selectedTeamId && e.date === dateStr);
+                          const dayName = dateObj.toLocaleDateString('en-US', { weekday: 'short' }).toUpperCase();
+                          const isSelected = selectedDateStr === dateStr;
                           return (
-                            <button 
+                            <button
                               key={i}
-                              onClick={() => setSelectedDate(day)}
+                              onClick={() => { setSelectedDate(day); setSelectedDateStr(dateStr); setCalendarMonth(dateObj.getMonth()); setCalendarYear(dateObj.getFullYear()); }}
                               className={`p-3 rounded-[1.5rem] text-left transition-all active:scale-95 border-2 ${
-                                selectedDate === day ? 'bg-primary border-primary shadow-lg shadow-primary/20' : 'bg-white border-transparent'
+                                isSelected ? 'bg-primary border-primary shadow-lg shadow-primary/20' : 'bg-white border-transparent'
                               }`}
                             >
                               <div className="flex justify-between items-start mb-2">
-                                <span className={`text-[8px] font-black uppercase tracking-widest ${selectedDate === day ? 'text-white' : 'text-slate-900'}`}>
+                                <span className={`text-[8px] font-black uppercase tracking-widest ${isSelected ? 'text-white' : 'text-slate-900'}`}>
                                   {dayName}
                                 </span>
-                                <span className={`text-xs font-black italic ${selectedDate === day ? 'text-white' : 'text-slate-900'}`}>
+                                <span className={`text-xs font-black italic ${isSelected ? 'text-white' : 'text-slate-900'}`}>
                                   {day}
                                 </span>
                               </div>
@@ -1735,13 +1989,13 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                                   Object.entries(getTeamEventTypeCounts(dayEvents)).map(([type, count]) => {
                                     const style = TEAM_EVENT_TYPE_STYLES[type as keyof typeof TEAM_EVENT_TYPE_STYLES] || TEAM_EVENT_TYPE_STYLES.event;
                                     return (
-                                      <span key={type} className={`inline-flex items-center justify-center w-5 h-5 rounded-md text-[9px] font-black ring-1 ring-white/60 ${selectedDate === day ? `${style.selectedBg} ${style.selectedText}` : `${style.bg} ${style.text}`}`}>
+                                      <span key={type} className={`inline-flex items-center justify-center w-5 h-5 rounded-md text-[9px] font-black ring-1 ring-white/60 ${isSelected ? `${style.selectedBg} ${style.selectedText}` : `${style.bg} ${style.text}`}`}>
                                         {count}
                                       </span>
                                     );
                                   })
                                 ) : (
-                                  <span className={`text-[8px] font-bold italic ${selectedDate === day ? 'text-white/40' : 'text-slate-300'}`}>No events</span>
+                                  <span className={`text-[8px] font-bold italic ${isSelected ? 'text-white/40' : 'text-slate-300'}`}>No events</span>
                                 )}
                               </div>
                             </button>
@@ -2131,7 +2385,7 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                               <div className="space-y-1.5 px-2">
                                 {(squad.players || []).map((slot: any, idx: number) => {
                                   const playerId = slot?.playerId || (typeof slot === 'string' ? slot : null);
-                                  const player = playerId ? MOCK_LINEUP.find(p => p.id === playerId) : null;
+                                  const player = playerId ? rosterMembers.find(p => p.id === playerId) : null;
                                   
                                   if (!player) {
                                     return (
@@ -2194,7 +2448,15 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                                       </div>
                                       <div className="flex-1 min-w-0">
                                         <p className="text-[11px] font-bold text-slate-900 truncate uppercase tracking-tight">{player.name}</p>
-                                        <p className="text-[8px] font-black text-primary/50 uppercase tracking-widest -mt-0.5">{player.position}</p>
+                                        {(() => {
+                                          const role = localStorage.getItem(`gameday_role_${player.id}_${selectedTeamId}`);
+                                          const isCoach = role === 'coach' || role === 'manager' || player.id === selectedTeam?.coachId || player.id === selectedTeam?.createdBy;
+                                          if (isCoach) return null;
+                                          const profilePos = StorageService.getUserData(player.id)?.position;
+                                          return profilePos ? (
+                                            <p className="text-[8px] font-black text-primary/50 uppercase tracking-widest -mt-0.5">{profilePos}</p>
+                                          ) : null;
+                                        })()}
                                       </div>
                                       {(() => {
                                         const status = pickerAttendance[player.name];
@@ -2321,7 +2583,7 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                               )}
                             </div>
                             <div className="flex-1 overflow-y-auto p-4 space-y-2 bg-slate-50">
-                              {MOCK_LINEUP.map(p => {
+                              {rosterMembers.map(p => {
                                 const currentSquad = activeLineup.squads.find((s: any) => s.id === activeSquadId);
                                 const isAlreadyAdded = (currentSquad?.players || []).some((s: any) => (s?.playerId || s) === p.id);
                                 
@@ -2359,7 +2621,13 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                                       </div>
                                       <div>
                                         <p className="text-[11px] font-black text-slate-900 uppercase">{p.name}</p>
-                                        <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest">{p.position}</p>
+                                        {(() => {
+                                          const role = localStorage.getItem(`gameday_role_${p.id}_${selectedTeamId}`);
+                                          const isCoach = role === 'coach' || role === 'manager' || p.id === selectedTeam?.coachId || p.id === selectedTeam?.createdBy;
+                                          if (isCoach) return null;
+                                          const pos = StorageService.getUserData(p.id)?.position;
+                                          return pos ? <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest">{pos}</p> : null;
+                                        })()}
                                       </div>
                                       {(() => {
                                         const status = pickerAttendance[p.name];
@@ -3195,37 +3463,87 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                 </div>
 
                 {/* Leave Team */}
-                {user?.role !== 'club' && (
-                  <button
-                    onClick={() => {
-                      setIsEditTeamOpen(false);
-                      setTimeout(() => setIsLeaveModalOpen(true), 200);
-                    }}
-                    className="w-full h-10 rounded-2xl border border-slate-200 bg-white text-slate-500 text-[9px] font-black uppercase tracking-widest transition-all hover:bg-slate-50 active:scale-[0.98] flex items-center justify-center gap-2"
-                  >
-                    <LogOut className="w-3.5 h-3.5" />
-                    Leave Team
-                  </button>
-                )}
+                {user?.role !== 'club' && (() => {
+                  const myRole = localStorage.getItem(`gameday_role_${user?.id}_${selectedTeam?.id}`);
+                  const childId = localStorage.getItem(`gameday_child_${user?.id}_${selectedTeam?.id}`);
+                  const children = JSON.parse(localStorage.getItem('gameday_children') || '[]');
+                  const childObj = childId ? children.find((c: any) => c.id === childId) : null;
+                  const isParentRole = myRole === 'parent' && childObj;
+                  return (
+                    <button
+                      onClick={() => {
+                        setIsEditTeamOpen(false);
+                        setTimeout(() => setIsLeaveModalOpen(true), 200);
+                      }}
+                      className="w-full h-10 rounded-2xl border border-slate-200 bg-white text-slate-500 text-[9px] font-black uppercase tracking-widest transition-all hover:bg-slate-50 active:scale-[0.98] flex items-center justify-center gap-2"
+                    >
+                      <LogOut className="w-3.5 h-3.5" />
+                      {isParentRole ? `Leave on behalf of ${childObj.name}` : 'Leave Team'}
+                    </button>
+                  );
+                })()}
 
                 {/* Archive Team — only visible to team creator/coach */}
                 {isTeamCoach && (
                   <button
-                    onClick={() => {
-                      if (!selectedTeam) return;
-                      if (confirm('Archive this team? It will be hidden but data will be kept.')) {
-                        StorageService.deleteTeam(selectedTeam.id);
-                        setIsEditTeamOpen(false);
-                        setSelectedTeamId(null);
-                        window.dispatchEvent(new Event('gameday_update'));
-                      }
-                    }}
+                    onClick={() => setShowArchiveConfirm(true)}
                     className="w-full h-10 rounded-2xl border border-amber-200 bg-white text-amber-500 text-[9px] font-black uppercase tracking-widest transition-all hover:bg-amber-50 active:scale-[0.98] flex items-center justify-center gap-2"
                   >
                     <Archive className="w-3.5 h-3.5" />
                     Archive Team
                   </button>
                 )}
+
+                {/* Archive Team Confirmation Modal */}
+                <AnimatePresence>
+                  {showArchiveConfirm && (
+                    <>
+                      <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="fixed inset-0 bg-black/60 z-[80]"
+                        onClick={() => setShowArchiveConfirm(false)}
+                      />
+                      <motion.div
+                        initial={{ opacity: 0, scale: 0.95, y: 20 }}
+                        animate={{ opacity: 1, scale: 1, y: 0 }}
+                        exit={{ opacity: 0, scale: 0.95, y: 20 }}
+                        className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[85] w-[88%] max-w-sm bg-white rounded-[2rem] shadow-2xl overflow-hidden"
+                      >
+                        <div className="bg-slate-900 p-6">
+                          <h3 className="text-white text-base font-black uppercase tracking-tight">Archive Team</h3>
+                        </div>
+                        <div className="p-6">
+                          <p className="text-sm text-slate-600 mb-6">
+                            Archive this team? It will be hidden but all data will be kept.
+                          </p>
+                          <div className="flex gap-3">
+                            <button
+                              onClick={() => setShowArchiveConfirm(false)}
+                              className="flex-1 h-11 rounded-2xl bg-slate-100 text-slate-600 text-[10px] font-black uppercase tracking-widest hover:bg-slate-200 active:scale-[0.98] transition-all"
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              onClick={() => {
+                                if (!selectedTeam) return;
+                                StorageService.deleteTeam(selectedTeam.id);
+                                setShowArchiveConfirm(false);
+                                setIsEditTeamOpen(false);
+                                setSelectedTeamId(null);
+                                window.dispatchEvent(new Event('gameday_update'));
+                              }}
+                              className="flex-1 h-11 rounded-2xl bg-amber-500 text-white text-[10px] font-black uppercase tracking-widest hover:bg-amber-600 active:scale-[0.98] transition-all"
+                            >
+                              Archive
+                            </button>
+                          </div>
+                        </div>
+                      </motion.div>
+                    </>
+                  )}
+                </AnimatePresence>
 
                 {/* Delete Team — only visible to team creator/coach */}
                 {isTeamCoach && (
@@ -3256,8 +3574,28 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                     }
                     // Save name
                     if (editTeamName.trim()) {
-                      localStorage.setItem(`gameday_team_name_${selectedTeam.id}`, editTeamName.trim());
-                      setTeamNames(prev => ({ ...prev, [selectedTeam.id]: editTeamName.trim() }));
+                      const newName = editTeamName.trim();
+                      localStorage.setItem(`gameday_team_name_${selectedTeam.id}`, newName);
+                      setTeamNames(prev => ({ ...prev, [selectedTeam.id]: newName }));
+
+                      // Also update the custom team object so all components pick up the new name
+                      const customTeamsAll = JSON.parse(localStorage.getItem('gameday_custom_teams') || '[]');
+                      const teamIdx = customTeamsAll.findIndex((t: any) => t.id === selectedTeam.id);
+                      if (teamIdx !== -1) {
+                        customTeamsAll[teamIdx].name = newName;
+                        localStorage.setItem('gameday_custom_teams', JSON.stringify(customTeamsAll));
+                      }
+
+                      // Sync renamed team to Firestore
+                      (async () => {
+                        try {
+                          const { db } = await import('../firebase');
+                          const { doc, updateDoc } = await import('firebase/firestore');
+                          await updateDoc(doc(db, 'teams', selectedTeam.id), { name: newName });
+                        } catch (e) {
+                          console.warn('Firestore team rename sync failed:', e);
+                        }
+                      })();
                     }
                     window.dispatchEvent(new Event('gameday_update'));
                     setIsEditTeamOpen(false);
@@ -3623,7 +3961,7 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                           if (user?.id && foundTeam) {
                             try {
                               const { db } = await import('../firebase');
-                              const { doc, getDoc, updateDoc, setDoc } = await import('firebase/firestore');
+                              const { doc, getDoc, setDoc } = await import('firebase/firestore');
 
                               const userRef = doc(db, 'users', user.id);
                               const userSnap = await getDoc(userRef);
@@ -3637,13 +3975,17 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                                 clubId: clubId,
                               }, { merge: true });
 
+                              // Sync team doc + members to Firestore so they survive re-login
+                              await StorageService.syncTeamToFirestore(foundTeam);
+                              await StorageService.syncTeamMembersToFirestore(foundTeam.id, JSON.parse(localStorage.getItem(`gameday_team_members_${foundTeam.id}`) || '[]'));
+
                               // Update local user state too
                               onUpdateUser({ teamIds: updatedTeamIds, clubId });
                             } catch (e) {
                               console.warn('Firestore team join write failed:', e);
                             }
                           }
-                          
+
                           setJoinedTeamName(foundTeam.name);
                           setJoinStep('success');
                           window.dispatchEvent(new Event('gameday_update'));
@@ -3725,6 +4067,10 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                                       teamIds: updatedTeamIds,
                                       clubId: clubId,
                                     }, { merge: true });
+
+                                    // Sync team doc + members to Firestore so they survive re-login
+                                    await StorageService.syncTeamToFirestore(foundTeam);
+                                    await StorageService.syncTeamMembersToFirestore(foundTeam.id, JSON.parse(localStorage.getItem(`gameday_team_members_${foundTeam.id}`) || '[]'));
 
                                     // Update local user state too
                                     onUpdateUser({ teamIds: updatedTeamIds, clubId });
@@ -3830,6 +4176,10 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                                       teamIds: updatedTeamIds,
                                       clubId: clubId,
                                     }, { merge: true });
+
+                                    // Sync team doc + members to Firestore so they survive re-login
+                                    await StorageService.syncTeamToFirestore(foundTeam);
+                                    await StorageService.syncTeamMembersToFirestore(foundTeam.id, JSON.parse(localStorage.getItem(`gameday_team_members_${foundTeam.id}`) || '[]'));
 
                                     // Update local user state too
                                     onUpdateUser({ teamIds: updatedTeamIds, clubId });
@@ -4082,33 +4432,27 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                       </p>
                     </div>
                     <button
-                      onClick={() => {
-                        const copyText = (text: string) => {
+                      onClick={async () => {
+                        try {
                           if (navigator.clipboard && window.isSecureContext) {
-                            return navigator.clipboard.writeText(text);
+                            await navigator.clipboard.writeText(generatedCode);
+                          } else {
+                            const ta = document.createElement('textarea'); ta.value = generatedCode; ta.style.position = 'fixed'; ta.style.left = '-9999px';
+                            document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta);
                           }
-                          const ta = document.createElement('textarea');
-                          ta.value = text;
-                          ta.style.position = 'fixed';
-                          ta.style.left = '-9999px';
-                          document.body.appendChild(ta);
-                          ta.select();
-                          document.execCommand('copy');
-                          document.body.removeChild(ta);
-                          return Promise.resolve();
-                        };
-                        copyText(generatedCode).then(() => {
-                          setCopied(true);
-                          setTimeout(() => setCopied(false), 2000);
-                        });
+                        } catch (e) {
+                          const ta = document.createElement('textarea'); ta.value = generatedCode; ta.style.position = 'fixed'; ta.style.left = '-9999px';
+                          document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta);
+                        }
+                        setCopied(true);
+                        setTimeout(() => setCopied(false), 2000);
                       }}
-                      className="flex items-center gap-2 mx-auto bg-white 
-                                 border border-slate-100 rounded-xl px-4 py-2 
-                                 text-[10px] font-black uppercase tracking-widest 
-                                 text-slate-600 hover:bg-slate-50 transition-all"
+                      className={`flex items-center gap-2 mx-auto rounded-xl px-4 py-2
+                                 text-[10px] font-black uppercase tracking-widest
+                                 transition-all ${copied ? 'bg-green-50 border border-green-200 text-green-600' : 'bg-white border border-slate-100 text-slate-600 hover:bg-slate-50'}`}
                     >
-                      <Copy className="w-3.5 h-3.5" />
-                      {copied ? '✓ COPIED!' : 'COPY CODE'}
+                      {copied ? <CheckCircle2 className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                      {copied ? 'COPIED!' : 'COPY CODE'}
                     </button>
 
                     <button
@@ -4270,6 +4614,271 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
           </>
         )}
 
+        {/* Options Modal (non-coach members) */}
+        {isOptionsOpen && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setIsOptionsOpen(false)}
+              className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[60]"
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+              className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2
+                         z-[70] w-[88%] max-w-sm bg-white rounded-[2rem] shadow-2xl
+                         overflow-hidden"
+            >
+              <div className="bg-slate-900 p-6 flex items-center justify-between">
+                <h3 className="text-base font-black uppercase italic text-white">
+                  Team Options
+                </h3>
+                <button
+                  onClick={() => setIsOptionsOpen(false)}
+                  className="w-8 h-8 rounded-xl bg-white/5 hover:bg-white/15
+                             flex items-center justify-center text-white/60
+                             hover:text-white transition-all"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+              <div className="p-5">
+                {(() => {
+                  const myRole = localStorage.getItem(`gameday_role_${user?.id}_${selectedTeam?.id}`);
+                  const childId = localStorage.getItem(`gameday_child_${user?.id}_${selectedTeam?.id}`);
+                  const children = JSON.parse(localStorage.getItem('gameday_children') || '[]');
+                  const childObj = childId ? children.find((c: any) => c.id === childId) : null;
+                  const isParentRole = myRole === 'parent' && childObj;
+                  return (
+                    <button
+                      onClick={() => {
+                        setIsOptionsOpen(false);
+                        setTimeout(() => setIsLeaveModalOpen(true), 200);
+                      }}
+                      className="w-full h-12 rounded-2xl border border-red-200 bg-red-50 text-red-500
+                                 text-[10px] font-black uppercase tracking-widest
+                                 hover:bg-red-100 active:scale-[0.98] transition-all
+                                 flex items-center justify-center gap-2"
+                    >
+                      <LogOut className="w-4 h-4" />
+                      {isParentRole ? `Leave on behalf of ${childObj.name}` : 'Leave Team'}
+                    </button>
+                  );
+                })()}
+              </div>
+            </motion.div>
+          </>
+        )}
+
+        {/* Member Profile Modal */}
+        {viewMemberProfile && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setViewMemberProfile(null)}
+              className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-[60]"
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              transition={{ type: 'spring', damping: 25, stiffness: 200 }}
+              className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2
+                         z-[70] w-[92%] max-w-sm max-h-[85vh] flex flex-col
+                         bg-white rounded-[2rem] shadow-2xl overflow-hidden"
+            >
+              {/* Dark header with centered avatar + name + badges */}
+              <div className="bg-slate-900 pt-8 pb-6 px-6 shrink-0 relative">
+                <button
+                  onClick={() => setViewMemberProfile(null)}
+                  className="absolute top-4 right-4 w-8 h-8 rounded-full bg-white/10 hover:bg-white/20
+                             flex items-center justify-center text-white/60
+                             hover:text-white transition-all"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+
+                <div className="flex flex-col items-center">
+                  <div className="w-20 h-20 rounded-2xl overflow-hidden border-[3px] border-white/20 shadow-lg bg-slate-700">
+                    <DefaultAvatar
+                      src={viewMemberProfile.avatar}
+                      name={viewMemberProfile.name}
+                      size="xl"
+                      className="rounded-none w-full h-full"
+                    />
+                  </div>
+                  <h3 className="text-lg font-black uppercase italic text-white leading-none mt-4 text-center">
+                    {viewMemberProfile.name}
+                  </h3>
+
+                  {/* Badges row */}
+                  <div className="flex items-center gap-2 mt-3">
+                    {viewMemberProfile.isChild ? (
+                      <span className="px-3 py-1 rounded-full bg-white/10 text-[9px] font-black uppercase tracking-widest text-white">
+                        Junior
+                      </span>
+                    ) : (() => {
+                      const memberRole = localStorage.getItem(`gameday_role_${viewMemberProfile.id}_${selectedTeam?.id}`);
+                      const isCoachMember = memberRole === 'coach' || memberRole === 'manager' || viewMemberProfile.role === 'Coach' || viewMemberProfile.role === 'coach' || viewMemberProfile.id === selectedTeam?.coachId || viewMemberProfile.id === selectedTeam?.createdBy;
+                      const pos = viewMemberProfile.position;
+                      return (
+                        <span className="px-3 py-1 rounded-full bg-primary text-[9px] font-black uppercase tracking-widest text-white">
+                          {isCoachMember ? 'Coach' : pos || 'Member'}
+                        </span>
+                      );
+                    })()}
+                  </div>
+                </div>
+              </div>
+
+              {/* Body — contact rows with icons */}
+              <div className="flex-1 overflow-y-auto">
+                {viewMemberProfile.isChild ? (
+                  <>
+                    {/* Parent / Guardian section */}
+                    <div className="px-6 pt-5 pb-2">
+                      <h4 className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Parent / Guardian</h4>
+                    </div>
+                    <div className="divide-y divide-slate-100">
+                      <div className="flex items-center gap-4 px-6 py-4">
+                        <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center shrink-0">
+                          <UserIcon className="w-5 h-5 text-slate-400" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-[8px] font-black text-primary uppercase tracking-widest">Name</p>
+                          <p className="text-sm font-bold text-slate-900 mt-0.5 truncate">{viewMemberProfile.parentName || '—'}</p>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-4 px-6 py-4">
+                        <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center shrink-0">
+                          <Phone className="w-5 h-5 text-slate-400" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-[8px] font-black text-primary uppercase tracking-widest">Phone</p>
+                          {viewMemberProfile.parentPhone ? (
+                            <a href={`tel:${viewMemberProfile.parentPhone}`} className="text-sm font-bold text-slate-900 mt-0.5 block truncate">{viewMemberProfile.parentPhone}</a>
+                          ) : (
+                            <p className="text-sm text-slate-400 mt-0.5 italic">Not provided</p>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-4 px-6 py-4">
+                        <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center shrink-0">
+                          <Mail className="w-5 h-5 text-slate-400" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-[8px] font-black text-primary uppercase tracking-widest">Email</p>
+                          {viewMemberProfile.parentEmail ? (
+                            <a href={`mailto:${viewMemberProfile.parentEmail}`} className="text-sm font-bold text-slate-900 mt-0.5 block truncate">{viewMemberProfile.parentEmail}</a>
+                          ) : (
+                            <p className="text-sm text-slate-400 mt-0.5 italic">Not provided</p>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    {/* Contact Info section */}
+                    <div className="px-6 pt-5 pb-2">
+                      <h4 className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Contact Info</h4>
+                    </div>
+                    <div className="divide-y divide-slate-100">
+                      <div className="flex items-center gap-4 px-6 py-4">
+                        <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center shrink-0">
+                          <Mail className="w-5 h-5 text-slate-400" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-[8px] font-black text-primary uppercase tracking-widest">Email</p>
+                          {viewMemberProfile.email ? (
+                            <a href={`mailto:${viewMemberProfile.email}`} className="text-sm font-bold text-slate-900 mt-0.5 block truncate">{viewMemberProfile.email}</a>
+                          ) : (
+                            <p className="text-sm text-slate-400 mt-0.5 italic">Not provided</p>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-4 px-6 py-4">
+                        <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center shrink-0">
+                          <Phone className="w-5 h-5 text-slate-400" />
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-[8px] font-black text-primary uppercase tracking-widest">Phone</p>
+                          {viewMemberProfile.phone ? (
+                            <a href={`tel:${viewMemberProfile.phone}`} className="text-sm font-bold text-slate-900 mt-0.5 block truncate">{viewMemberProfile.phone}</a>
+                          ) : (
+                            <p className="text-sm text-slate-400 mt-0.5 italic">Not provided</p>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Emergency Contact section */}
+                    <div className="px-6 pt-5 pb-2">
+                      <h4 className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Emergency Contact</h4>
+                    </div>
+                    {viewMemberProfile.emergencyContact?.firstName ? (
+                      <div className="divide-y divide-slate-100">
+                        <div className="flex items-center gap-4 px-6 py-4">
+                          <div className="w-10 h-10 rounded-full bg-red-50 flex items-center justify-center shrink-0">
+                            <Heart className="w-5 h-5 text-red-400" />
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            <p className="text-[8px] font-black text-red-400 uppercase tracking-widest">Name</p>
+                            <p className="text-sm font-bold text-slate-900 mt-0.5 truncate">
+                              {viewMemberProfile.emergencyContact.firstName} {viewMemberProfile.emergencyContact.lastName || ''}
+                            </p>
+                          </div>
+                        </div>
+                        {viewMemberProfile.emergencyContact.phone && (
+                          <div className="flex items-center gap-4 px-6 py-4">
+                            <div className="w-10 h-10 rounded-full bg-red-50 flex items-center justify-center shrink-0">
+                              <Phone className="w-5 h-5 text-red-400" />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-[8px] font-black text-red-400 uppercase tracking-widest">Phone</p>
+                              <a href={`tel:${viewMemberProfile.emergencyContact.phone}`} className="text-sm font-bold text-slate-900 mt-0.5 block truncate">{viewMemberProfile.emergencyContact.phone}</a>
+                            </div>
+                          </div>
+                        )}
+                        {viewMemberProfile.emergencyContact.email && (
+                          <div className="flex items-center gap-4 px-6 py-4">
+                            <div className="w-10 h-10 rounded-full bg-red-50 flex items-center justify-center shrink-0">
+                              <Mail className="w-5 h-5 text-red-400" />
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-[8px] font-black text-red-400 uppercase tracking-widest">Email</p>
+                              <a href={`mailto:${viewMemberProfile.emergencyContact.email}`} className="text-sm font-bold text-slate-900 mt-0.5 block truncate">{viewMemberProfile.emergencyContact.email}</a>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <div className="px-6 py-4">
+                        <div className="flex items-center gap-4">
+                          <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center shrink-0">
+                            <Heart className="w-5 h-5 text-slate-300" />
+                          </div>
+                          <p className="text-sm text-slate-400 italic">No emergency contact set</p>
+                        </div>
+                      </div>
+                    )}
+                    <div className="h-4" />
+                  </>
+                )}
+              </div>
+            </motion.div>
+          </>
+        )}
+
         {isLeaveModalOpen && (
           <>
             {/* Backdrop */}
@@ -4291,29 +4900,47 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                          overflow-hidden"
             >
               {/* Dark header */}
-              <div className="bg-slate-900 p-6 flex items-center justify-between">
-                <h3 className="text-base font-black uppercase italic text-white">
-                  Leave Team
-                </h3>
-                <button
-                  onClick={() => setIsLeaveModalOpen(false)}
-                  className="w-8 h-8 rounded-xl bg-white/5 hover:bg-white/15
-                             flex items-center justify-center text-white/60
-                             hover:text-white transition-all"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
+              {(() => {
+                const myRoleLeave = localStorage.getItem(`gameday_role_${user?.id}_${selectedTeam?.id}`);
+                const childIdLeave = localStorage.getItem(`gameday_child_${user?.id}_${selectedTeam?.id}`);
+                const childrenLeave = JSON.parse(localStorage.getItem('gameday_children') || '[]');
+                const childObjLeave = childIdLeave ? childrenLeave.find((c: any) => c.id === childIdLeave) : null;
+                const isParentLeave = myRoleLeave === 'parent' && childObjLeave;
+                return (
+                  <div className="bg-slate-900 p-6 flex items-center justify-between">
+                    <h3 className="text-base font-black uppercase italic text-white">
+                      {isParentLeave ? `Leave on behalf of ${childObjLeave.name}` : 'Leave Team'}
+                    </h3>
+                    <button
+                      onClick={() => setIsLeaveModalOpen(false)}
+                      className="w-8 h-8 rounded-xl bg-white/5 hover:bg-white/15
+                                 flex items-center justify-center text-white/60
+                                 hover:text-white transition-all"
+                    >
+                      <X className="w-4 h-4" />
+                    </button>
+                  </div>
+                );
+              })()}
 
               {/* Body */}
               <div className="p-6 space-y-5">
-                <p className="text-sm font-medium text-slate-600 leading-relaxed">
-                  Are you sure you want to leave{' '}
-                  <span className="font-black text-slate-900">
-                    {teamNames[selectedTeam?.id || ''] || selectedTeam?.name}
-                  </span>
-                  ? You will lose access to all team content, chat, and announcements.
-                </p>
+                {(() => {
+                  const myRoleLeave2 = localStorage.getItem(`gameday_role_${user?.id}_${selectedTeam?.id}`);
+                  const childIdLeave2 = localStorage.getItem(`gameday_child_${user?.id}_${selectedTeam?.id}`);
+                  const childrenLeave2 = JSON.parse(localStorage.getItem('gameday_children') || '[]');
+                  const childObjLeave2 = childIdLeave2 ? childrenLeave2.find((c: any) => c.id === childIdLeave2) : null;
+                  const isParentLeave2 = myRoleLeave2 === 'parent' && childObjLeave2;
+                  return (
+                    <p className="text-sm font-medium text-slate-600 leading-relaxed">
+                      {isParentLeave2 ? (
+                        <>Are you sure you want to remove <span className="font-black text-slate-900">{childObjLeave2.name}</span> from <span className="font-black text-slate-900">{teamNames[selectedTeam?.id || ''] || selectedTeam?.name}</span>? They will lose access to all team content and events.</>
+                      ) : (
+                        <>Are you sure you want to leave <span className="font-black text-slate-900">{teamNames[selectedTeam?.id || ''] || selectedTeam?.name}</span>? You will lose access to all team content, chat, and announcements.</>
+                      )}
+                    </p>
+                  );
+                })()}
 
                 <div className="flex gap-3">
                   {/* Cancel */}
@@ -4328,10 +4955,15 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
 
                   {/* Confirm Leave */}
                   <button
-                    onClick={() => {
+                    onClick={async () => {
                       if (!selectedTeam || !user?.id) return;
                       const teamId = selectedTeam.id;
                       const userId = user.id;
+
+                      // Check if this is a parent leaving on behalf of child
+                      const leaveRole = localStorage.getItem(`gameday_role_${userId}_${teamId}`);
+                      const leaveChildId = localStorage.getItem(`gameday_child_${userId}_${teamId}`);
+                      const isParentLeaving = leaveRole === 'parent' && !!leaveChildId;
 
                       // 1. Remove team from user's teamIds in gameday_user
                       const savedUser = JSON.parse(localStorage.getItem('gameday_user') || '{}');
@@ -4343,16 +4975,87 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                       userData.teamIds = (userData.teamIds || []).filter((id: string) => id !== teamId);
                       localStorage.setItem(`gameday_user_${userId}`, JSON.stringify(userData));
 
-                      // Storage Service removal
+                      // 3. Remove from team members list
                       StorageService.removeTeamMember(teamId, userId);
 
-                      // 3. Remove role key for this team
+                      // 4. Remove from lineup
+                      const lineupKey = `gameday_lineup_${teamId}`;
+                      const lineup = JSON.parse(localStorage.getItem(lineupKey) || '{}');
+                      if (lineup.starting) lineup.starting = lineup.starting.filter((p: any) => p.id !== userId);
+                      if (lineup.reserves) lineup.reserves = lineup.reserves.filter((p: any) => p.id !== userId);
+
+                      // 4b. If parent, also remove the child from lineup
+                      if (isParentLeaving && leaveChildId) {
+                        if (lineup.starting) lineup.starting = lineup.starting.filter((p: any) => p.id !== leaveChildId);
+                        if (lineup.reserves) lineup.reserves = lineup.reserves.filter((p: any) => p.id !== leaveChildId);
+                      }
+                      localStorage.setItem(lineupKey, JSON.stringify(lineup));
+
+                      // 5. Remove attendance responses for this team's events
+                      const allEvents = StorageService.getEvents();
+                      const teamEventIds = allEvents
+                        .filter((e: any) => e.teamId === teamId)
+                        .map((e: any) => e.id);
+                      const attendance = JSON.parse(localStorage.getItem('gameday_attendance') || '{}');
+                      teamEventIds.forEach((eventId: string) => {
+                        if (attendance[eventId]) {
+                          attendance[eventId] = attendance[eventId].filter((a: any) => a.userId !== userId && (!isParentLeaving || a.userId !== leaveChildId));
+                          if (attendance[eventId].length === 0) delete attendance[eventId];
+                        }
+                      });
+                      localStorage.setItem('gameday_attendance', JSON.stringify(attendance));
+
+                      // 6. Remove role key for this team
                       localStorage.removeItem(`gameday_role_${userId}_${teamId}`);
 
-                      // 4. Remove child link key if parent
+                      // 7. Remove child link key
                       localStorage.removeItem(`gameday_child_${userId}_${teamId}`);
 
-                      // 5. Fire update and navigate back to team list
+                      // 7b. If parent, also clean up child from gameday_children and team members
+                      if (isParentLeaving && leaveChildId) {
+                        // Remove child from team members
+                        StorageService.removeTeamMember(teamId, leaveChildId);
+
+                        // Remove this team from child's teamIds in gameday_children
+                        const allChildren = JSON.parse(localStorage.getItem('gameday_children') || '[]');
+                        const childIdx = allChildren.findIndex((c: any) => c.id === leaveChildId);
+                        if (childIdx !== -1) {
+                          allChildren[childIdx].teamIds = (allChildren[childIdx].teamIds || []).filter((id: string) => id !== teamId);
+                          // If child has no more teams, optionally keep them in children list but with empty teamIds
+                          localStorage.setItem('gameday_children', JSON.stringify(allChildren));
+                          // Sync updated child to Firestore
+                          StorageService.syncChildToFirestore(allChildren[childIdx]).catch(console.warn);
+                        }
+
+                        // Remove child from Firestore team members
+                        StorageService.removeMemberFromFirestore(teamId, leaveChildId).catch(console.warn);
+                      }
+
+                      // 8. Update React state
+                      const updatedTeamIds = (user.teamIds || []).filter(id => id !== teamId);
+                      onUpdateUser({ teamIds: updatedTeamIds });
+
+                      // 9. Sync removal to Firestore
+                      try {
+                        const { db } = await import('../firebase');
+                        const { doc, getDoc, setDoc } = await import('firebase/firestore');
+
+                        // Update user doc — remove teamId
+                        const userRef = doc(db, 'users', userId);
+                        const userSnap = await getDoc(userRef);
+                        if (userSnap.exists()) {
+                          const fsData = userSnap.data();
+                          const fsTeamIds = (fsData.teamIds || []).filter((id: string) => id !== teamId);
+                          await setDoc(userRef, { teamIds: fsTeamIds }, { merge: true });
+                        }
+
+                        // Remove user from Firestore team members
+                        StorageService.removeMemberFromFirestore(teamId, userId).catch(console.warn);
+                      } catch (e) {
+                        console.warn('Firestore leave sync failed:', e);
+                      }
+
+                      // 10. Fire update and navigate back to team list
                       window.dispatchEvent(new Event('gameday_update'));
                       setIsLeaveModalOpen(false);
                       setSelectedTeamId(null);
@@ -4466,7 +5169,8 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                         setSelectedTeamId(null);
                       } catch (err) {
                         console.error('Failed to delete team:', err);
-                        alert('Failed to delete team. Please try again.');
+                        setTeamErrorMsg('Failed to delete team. Please try again.');
+                        setTimeout(() => setTeamErrorMsg(null), 4000);
                       } finally {
                         setIsDeletingTeam(false);
                       }
@@ -4481,6 +5185,22 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
               </div>
             </motion.div>
           </>
+        )}
+
+        {/* Team error toast */}
+        {teamErrorMsg && (
+          <motion.div
+            initial={{ opacity: 0, y: 50 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 50 }}
+            className="fixed bottom-24 left-1/2 -translate-x-1/2 z-[100] w-[88%] max-w-sm flex items-center gap-2 p-4 bg-red-50 border border-red-200 rounded-2xl shadow-lg"
+          >
+            <AlertCircle className="w-4 h-4 text-red-500 shrink-0" />
+            <p className="text-xs text-red-600 font-medium flex-1">{teamErrorMsg}</p>
+            <button onClick={() => setTeamErrorMsg(null)} className="text-red-400 hover:text-red-600">
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </motion.div>
         )}
 
         {showRemoveModal && (

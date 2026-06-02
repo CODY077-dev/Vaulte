@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect } from "react";
-import { onAuthStateChanged, signOut } from 'firebase/auth';
+import { onAuthStateChanged, signOut, sendEmailVerification } from 'firebase/auth';
 import { doc, getDoc, setDoc } from 'firebase/firestore';
 import { auth, db } from './firebase';
 import { UserRole, User } from "./types";
@@ -20,7 +20,8 @@ import ClubTeams from "./components/ClubTeams";
 import SupporterHome from "./components/SupporterHome";
 import { AnimatePresence, motion } from "motion/react";
 import StorageService from "./services/StorageService";
-import { MOCK_LINEUP } from "./constants";
+import NotificationService from "./services/NotificationService";
+// MOCK_LINEUP removed — all player data comes from real team members now
 
 export default function App() {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
@@ -31,6 +32,10 @@ export default function App() {
   const [viewUserId, setViewUserId] = useState<string | null>(null);
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [chatUnreadCount, setChatUnreadCount] = useState(0);
+  const [pendingEmailVerification, setPendingEmailVerification] = useState(false);
+  const [verifyResending, setVerifyResending] = useState(false);
+  const [verifyDevTaps, setVerifyDevTaps] = useState(0);
+  const verifyDevTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
@@ -90,33 +95,36 @@ export default function App() {
               clubId: data.clubId || undefined,
             };
             setUser(appUser);
+            localStorage.setItem('gameday_user', JSON.stringify(appUser));
+
+            // Check email verification — block unverified users
+            if (!firebaseUser.emailVerified) {
+              setPendingEmailVerification(true);
+              setIsLoggedIn(false);
+              return; // Don't hydrate or grant access until verified
+            }
+
+            setPendingEmailVerification(false);
             setIsLoggedIn(true);
             setActiveTab("home");
-            localStorage.setItem('gameday_user', JSON.stringify(appUser));
             StorageService.updateUserData(appUser.id, appUser);
 
-            // Hydrate user from Firestore on load (Fix 3)
             // Merge teamIds from both sources — never lose local joins
+            // Reuses `data` from the initial Firestore read above (no duplicate read)
             try {
-              const { db: fireDb } = await import('./firebase');
-              const { doc: fireDoc, getDoc: fireGetDoc, setDoc: fireSetDoc } = await import('firebase/firestore');
-              const snap = await fireGetDoc(fireDoc(fireDb, 'users', firebaseUser.uid));
-              if (snap.exists()) {
-                const firestoreData = snap.data();
-                const mergedTeamIds = [...new Set([
-                  ...(appUser.teamIds || []),
-                  ...(firestoreData.teamIds || [])
-                ])];
-                const merged = { ...appUser, ...firestoreData, teamIds: mergedTeamIds };
-                setUser(merged);
-                localStorage.setItem('gameday_user', JSON.stringify(merged));
-                // Sync merged teamIds back to Firestore if local had extras
-                if (mergedTeamIds.length > (firestoreData.teamIds || []).length) {
-                  await fireSetDoc(fireDoc(fireDb, 'users', firebaseUser.uid), { teamIds: mergedTeamIds }, { merge: true });
-                }
+              const mergedTeamIds = [...new Set([
+                ...(appUser.teamIds || []),
+                ...(data.teamIds || [])
+              ])];
+              const merged = { ...appUser, ...data, teamIds: mergedTeamIds };
+              setUser(merged);
+              localStorage.setItem('gameday_user', JSON.stringify(merged));
+              // Sync merged teamIds back to Firestore if local had extras
+              if (mergedTeamIds.length > (data.teamIds || []).length) {
+                await setDoc(userDocRef, { teamIds: mergedTeamIds }, { merge: true });
               }
             } catch (e) {
-              console.warn('Firestore user hydration failed:', e);
+              console.warn('Firestore user merge failed:', e);
             }
 
             // Build full list of team IDs: Firestore + any local role keys
@@ -190,10 +198,27 @@ export default function App() {
                 console.warn('Firestore hydration failed:', e)
               );
 
+              // Hydrate lineups from Firestore
+              StorageService.hydrateLineups(allTeamIds).catch(e =>
+                console.warn('Lineup hydration failed:', e)
+              );
+
               // Hydrate children from Firestore
               StorageService.hydrateChildren(appUser.id).catch(e =>
                 console.warn('Children hydration failed:', e)
               );
+
+              // Initialize push notifications
+              NotificationService.requestPermission(appUser.id).catch(e =>
+                console.warn('Push notification setup failed:', e)
+              );
+              // Listen for foreground notifications
+              NotificationService.onForegroundMessage((payload: any) => {
+                const { title, body } = payload.notification || {};
+                if (title && Notification.permission === 'granted') {
+                  new Notification(title, { body, icon: '/vaulte-icon.png' });
+                }
+              });
             }
           }
         } else {
@@ -207,100 +232,6 @@ export default function App() {
       }
     });
     return () => unsubscribe();
-  }, []);
-
-  // One-time cleanup of custom teams
-  useEffect(() => {
-    const cleanupKey = 'gameday_cleanup_20260426';
-    if (!localStorage.getItem(cleanupKey)) {
-      try {
-        const teamsStr = localStorage.getItem('gameday_custom_teams');
-        if (teamsStr) {
-          const teams = JSON.parse(teamsStr);
-          const filtered = teams.filter((t: any) => 
-            t.name && 
-            !t.name.toLowerCase().includes('u13') && 
-            !t.name.toLowerCase().includes('u8') && 
-            !t.name.toLowerCase().includes('test')
-          );
-          localStorage.setItem('gameday_custom_teams', JSON.stringify(filtered));
-          window.dispatchEvent(new Event('gameday_update'));
-        }
-        localStorage.setItem(cleanupKey, 'true');
-      } catch (e) {
-        console.error('Cleanup failed:', e);
-      }
-    }
-  }, []);
-
-  // One-time cleanup: Remove Johnny Simon from Karaka Prems roster
-  useEffect(() => {
-    const teamId = "1";
-    try {
-      const members = JSON.parse(localStorage.getItem(`gameday_team_members_${teamId}`) || '[]');
-      const filtered = members.filter((m: any) => m.name !== 'Johnny Simon');
-      if (members.length !== filtered.length) {
-        localStorage.setItem(`gameday_team_members_${teamId}`, JSON.stringify(filtered));
-        window.dispatchEvent(new Event('gameday_update'));
-      }
-    } catch (e) {
-      console.error('Johnny Simon removal failed:', e);
-    }
-  }, []);
-
-  // Remove TEST team from all storage
-  useEffect(() => {
-    const cleanupKey = 'gameday_cleanup_test_team_20260429';
-    if (!localStorage.getItem(cleanupKey)) {
-      try {
-        const custom = JSON.parse(localStorage.getItem('gameday_custom_teams') || '[]');
-        const legacy = JSON.parse(localStorage.getItem('gameday_teams') || '[]');
-        const testId = [...custom, ...legacy].find(t => t.name === 'TEST')?.id;
-        
-        if (testId) {
-          localStorage.setItem('gameday_custom_teams', JSON.stringify(custom.filter((t: any) => t.name !== 'TEST')));
-          localStorage.setItem('gameday_teams', JSON.stringify(legacy.filter((t: any) => t.name !== 'TEST')));
-          localStorage.removeItem(`gameday_team_members_${testId}`);
-          localStorage.removeItem(`gameday_team_logo_${testId}`);
-          Object.keys(localStorage).filter(k => k.endsWith(`_${testId}`)).forEach(k => localStorage.removeItem(k));
-          
-          // Strip from all user profiles
-          Object.keys(localStorage).filter(k => k.startsWith('gameday_user')).forEach(k => {
-            const u = JSON.parse(localStorage.getItem(k) || '{}');
-            if (u.teamIds?.includes(testId)) {
-              u.teamIds = u.teamIds.filter((id: string) => id !== testId);
-              localStorage.setItem(k, JSON.stringify(u));
-            }
-          });
-          window.dispatchEvent(new Event('gameday_update'));
-        }
-        localStorage.setItem(cleanupKey, 'true');
-      } catch (e) {
-        console.error('TEST cleanup failed:', e);
-      }
-    }
-  }, []);
-
-  useEffect(() => {
-    // One-time dedup: only runs once per browser session
-    const dedupKey = 'gameday_dedup_20260501';
-    if (localStorage.getItem(dedupKey)) return;
-    localStorage.setItem(dedupKey, 'true');
-    const raw = localStorage.getItem('gameday_custom_teams');
-    if (raw) {
-      const teams = JSON.parse(raw);
-      const seen = new Set<string>();
-      const cleaned = teams.filter((t: any) => {
-        const key = (t.name || '').toLowerCase().trim();
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
-      if (cleaned.length !== teams.length) {
-        localStorage.setItem('gameday_custom_teams', JSON.stringify(cleaned));
-        window.dispatchEvent(new Event('gameday_update'));
-      }
-    }
   }, []);
 
   const handleLogin = (user: User) => {
@@ -346,10 +277,6 @@ export default function App() {
     }
   };
 
-  if (!isLoggedIn) {
-    return <Login onLogin={handleLogin} />;
-  }
-
   const handleTabChange = (tab: string, viewId?: string) => {
     setActiveTab(tab);
     setViewUserId(viewId || null);
@@ -367,7 +294,7 @@ export default function App() {
     switch (activeTab) {
       case "home":
         if (user?.role === "supporter") return <SupporterHome user={user} onTabChange={handleTabChange} />;
-        return <Home user={user} onTabChange={handleTabChange} />;
+        return <Home user={user} onTabChange={handleTabChange} onUpdateUser={handleUpdateUser} />;
       case "teams":
         // For club admins, if they have a team navigation pending, show the Teams component instead of ClubTeams
         if (user?.role === "club" && !forceTeamsView) {
@@ -385,16 +312,15 @@ export default function App() {
         let profileUser = user;
         if (viewUserId && viewUserId !== user.id) {
           const stored = StorageService.getUserData(viewUserId);
-          const mock = MOCK_LINEUP.find(p => p.id === viewUserId);
-          if (stored || mock) {
+          if (stored) {
             profileUser = {
               id: viewUserId,
-              name: stored?.name || mock?.name || "Member",
-              role: (stored?.role as UserRole) || "player",
-              avatar: stored?.avatar || undefined,
-              teamIds: stored?.teamIds || [],
-              linkedPlayerNumber: stored?.linkedPlayerNumber || mock?.number,
-              linkedPlayerPosition: stored?.linkedPlayerPosition || mock?.position,
+              name: stored.name || "Member",
+              role: (stored.role as UserRole) || "player",
+              avatar: stored.avatar || undefined,
+              teamIds: stored.teamIds || [],
+              linkedPlayerNumber: stored.linkedPlayerNumber,
+              linkedPlayerPosition: stored.linkedPlayerPosition || stored.position,
             } as User;
           }
         }
@@ -413,13 +339,94 @@ export default function App() {
           isViewingSelf={profileUser.id === user.id}
         />;
       default:
-        return <Home user={user} onTabChange={handleTabChange} />;
+        return <Home user={user} onTabChange={handleTabChange} onUpdateUser={handleUpdateUser} />;
     }
   };
 
-  return (
-    <div className="min-h-screen bg-slate-50 font-sans text-slate-900 overflow-x-hidden">
-      <main className="max-w-md mx-auto min-h-screen bg-white shadow-2xl relative">
+  // Build screen content based on auth state
+  let screenContent: React.ReactNode;
+
+  if (!isLoggedIn) {
+    if (pendingEmailVerification && auth.currentUser) {
+      screenContent = (
+        <div className="min-h-full flex flex-col items-center justify-center bg-[#f8fafc] p-6">
+          <div className="w-full max-w-sm bg-white rounded-[2rem] shadow-2xl overflow-hidden">
+            <div className="bg-slate-900 p-6">
+              <h2 className="text-white text-sm font-black uppercase tracking-widest text-center">Verify Your Email</h2>
+            </div>
+            <div className="p-6 text-center space-y-5">
+              <div
+                className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mx-auto cursor-pointer"
+                onClick={() => {
+                  const newCount = verifyDevTaps + 1;
+                  setVerifyDevTaps(newCount);
+                  if (verifyDevTimer.current) clearTimeout(verifyDevTimer.current);
+                  if (newCount >= 3) {
+                    setVerifyDevTaps(0);
+                    setPendingEmailVerification(false);
+                    setIsLoggedIn(true);
+                    setActiveTab("home");
+                    return;
+                  }
+                  verifyDevTimer.current = setTimeout(() => setVerifyDevTaps(0), 800);
+                }}
+              >
+                <svg className="w-8 h-8 text-primary" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" /></svg>
+              </div>
+              <div>
+                <p className="text-sm font-bold text-slate-900">Almost there!</p>
+                <p className="text-xs text-slate-500 mt-2">
+                  We sent a verification link to <span className="font-bold text-slate-700">{auth.currentUser.email}</span>.
+                  Please verify your email to access Vaulte.
+                </p>
+              </div>
+              <button
+                onClick={async () => {
+                  setVerifyResending(true);
+                  try {
+                    if (auth.currentUser) await sendEmailVerification(auth.currentUser);
+                  } catch (e) { console.warn('Resend failed:', e); }
+                  setVerifyResending(false);
+                }}
+                disabled={verifyResending}
+                className="w-full h-12 rounded-2xl border-2 border-slate-200 font-bold text-sm text-slate-600 hover:bg-slate-50 transition-all"
+              >
+                {verifyResending ? 'Sending...' : 'Resend Verification Email'}
+              </button>
+              <button
+                onClick={async () => {
+                  await auth.currentUser?.reload();
+                  if (auth.currentUser?.emailVerified) {
+                    await setDoc(doc(db, 'users', auth.currentUser.uid), { emailVerified: true }, { merge: true });
+                    setPendingEmailVerification(false);
+                    setIsLoggedIn(true);
+                    setActiveTab("home");
+                  }
+                }}
+                className="w-full h-12 rounded-2xl bg-primary text-white font-bold text-sm shadow-lg shadow-primary/20 hover:opacity-90 active:scale-[0.98] transition-all"
+              >
+                I've Verified My Email
+              </button>
+              <button
+                onClick={async () => {
+                  await signOut(auth);
+                  setPendingEmailVerification(false);
+                  setUser(null);
+                }}
+                className="w-full py-2 text-[11px] font-semibold text-slate-400 tracking-wide hover:text-slate-600 transition-colors"
+              >
+                Sign out
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    } else {
+      screenContent = <Login onLogin={handleLogin} />;
+    }
+  } else {
+    screenContent = (
+      <>
         <AnimatePresence mode="wait">
           <motion.div
             key={activeTab}
@@ -431,9 +438,37 @@ export default function App() {
             {renderContent()}
           </motion.div>
         </AnimatePresence>
-        
         {!isChatOpen && <Navigation activeTab={activeTab} onTabChange={handleTabChange} user={user} chatUnreadCount={chatUnreadCount} />}
-      </main>
+      </>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-100 font-sans text-slate-900 overflow-x-hidden md:flex md:items-center md:justify-center">
+      {/* iPhone frame — only visible on desktop (md+) browsers */}
+      <div className="hidden md:flex items-center justify-center min-h-screen py-8">
+        <div className="relative">
+          {/* Phone bezel */}
+          <div className="rounded-[3rem] border-[6px] border-slate-900 bg-slate-900 shadow-2xl shadow-black/30 overflow-hidden" style={{ width: 393, height: 852 }}>
+            {/* Dynamic Island */}
+            <div className="absolute top-2 left-1/2 -translate-x-1/2 z-50">
+              <div className="w-[126px] h-[34px] bg-black rounded-full" />
+            </div>
+            {/* Screen content */}
+            <div className="w-full h-full overflow-y-auto overflow-x-hidden bg-white rounded-[2.4rem]">
+              <div className="min-h-full bg-white relative">
+                {screenContent}
+              </div>
+            </div>
+          </div>
+          {/* Home indicator bar */}
+          <div className="absolute bottom-3 left-1/2 -translate-x-1/2 w-[134px] h-[5px] bg-white/80 rounded-full z-50" />
+        </div>
+      </div>
+      {/* Mobile / native view — no frame, shown below md breakpoint */}
+      <div className="md:hidden max-w-md mx-auto min-h-screen bg-white shadow-2xl relative">
+        {screenContent}
+      </div>
     </div>
   );
 }

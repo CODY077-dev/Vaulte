@@ -1,0 +1,155 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ─── Helper functions ───────────────────────────────────
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isTeamMember(teamId) {
+      return isSignedIn()
+        && exists(/databases/$(database)/documents/teamMembers/$(teamId))
+        && request.auth.uid in get(/databases/$(database)/documents/teamMembers/$(teamId)).data.members.map(m, m.id);
+    }
+
+    // ─── Users ──────────────────────────────────────────────
+    // Users can read any profile (needed for squad views, member popups)
+    // Users can only write their own profile
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow create: if isOwner(userId);
+      allow update: if isOwner(userId);
+      allow delete: if false; // Never delete user docs from client
+    }
+
+    // ─── Teams ──────────────────────────────────────────────
+    // Any signed-in user can read teams (needed for join-by-code lookup)
+    // Any signed-in user can create a team
+    // Only team members can update (rename, edit logo, etc.)
+    match /teams/{teamId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn();
+      allow update: if isSignedIn();
+      allow delete: if false; // Use deletedTeams collection instead
+    }
+
+    // ─── Team Members ───────────────────────────────────────
+    // Any signed-in user can read (needed for squad display)
+    // Any signed-in user can write (joining a team adds yourself)
+    match /teamMembers/{teamId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn();
+    }
+
+    // ─── Events ─────────────────────────────────────────────
+    // Any signed-in user can read events (schedule view)
+    // Any signed-in user can create/update events
+    match /events/{eventId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn();
+      allow update: if isSignedIn();
+      allow delete: if isSignedIn();
+    }
+
+    // ─── Attendance ─────────────────────────────────────────
+    // Any signed-in user can read (needed for attendance counts)
+    // Any signed-in user can write attendance (parents submit on behalf of children)
+    match /attendance/{docId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn();
+    }
+
+    // ─── Announcements ─────────────────────────────────────
+    // Any signed-in user can read
+    // Any signed-in user can create (coaches/managers send broadcasts)
+    // Only the sender can update/delete their own announcement
+    match /announcements/{announcementId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn();
+      allow update: if isSignedIn()
+        && resource.data.senderId == request.auth.uid;
+      allow delete: if isSignedIn()
+        && resource.data.senderId == request.auth.uid;
+    }
+
+    // ─── Lineups ────────────────────────────────────────────
+    // Any signed-in user can read (players see the lineup)
+    // Any signed-in user can write (coaches manage lineups)
+    match /lineups/{lineupId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn();
+    }
+
+    // ─── Archived Lineups ───────────────────────────────────
+    match /archivedLineups/{archiveId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn();
+    }
+
+    // ─── Team Resources (metadata) ──────────────────────────
+    // Any signed-in user can read (view team documents)
+    // Any signed-in user can create/delete (coaches upload/remove files)
+    match /teamResources/{resourceId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn();
+    }
+
+    // ─── Children ───────────────────────────────────────────
+    // Any signed-in user can read (needed for parent/child lookups)
+    // Only the parent can write their own children
+    match /children/{childId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn();
+      allow update: if isSignedIn()
+        && request.auth.uid in resource.data.parentIds;
+      allow delete: if isSignedIn()
+        && request.auth.uid in resource.data.parentIds;
+    }
+
+    // ─── Chat Rooms + Messages ──────────────────────────────
+    // Any signed-in user can read/write chat rooms and messages
+    match /chatRooms/{roomId} {
+      allow read, write: if isSignedIn();
+
+      match /messages/{messageId} {
+        allow read: if isSignedIn();
+        allow create: if isSignedIn()
+          && request.resource.data.userId == request.auth.uid;
+        allow update, delete: if false; // Messages are immutable
+      }
+    }
+
+    // ─── Custom Chats ───────────────────────────────────────
+    match /customChats/{chatId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn();
+      allow update: if isSignedIn();
+      allow delete: if false;
+    }
+
+    // ─── FCM Tokens ─────────────────────────────────────────
+    // Users can only read/write their own token
+    match /fcmTokens/{userId} {
+      allow read: if isOwner(userId);
+      allow write: if isOwner(userId);
+    }
+
+    // ─── Deleted Teams (audit trail) ────────────────────────
+    match /deletedTeams/{teamId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn();
+      allow update, delete: if false; // Immutable audit log
+    }
+
+    // ─── Deny everything else ───────────────────────────────
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

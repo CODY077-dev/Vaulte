@@ -23,6 +23,7 @@ export interface Announcement {
   editedAt?: string;
   clubId?: string;
   type?: 'attendance_reminder' | 'broadcast' | 'direct_message';
+  recipientId?: string;
   eventId?: string;
   isReminder?: boolean;
   isUrgent?: boolean;
@@ -43,6 +44,17 @@ class StorageService {
   private static readonly EVENTS_KEY = 'gameday_events';
   private static readonly USER_PREFIX = 'gameday_user_';
 
+  /** Safe JSON parse — returns fallback on corrupted data instead of crashing */
+  private static safeParse<T>(data: string | null, fallback: T): T {
+    if (!data) return fallback;
+    try {
+      return JSON.parse(data);
+    } catch (e) {
+      console.warn('StorageService: corrupted localStorage data, returning fallback', e);
+      return fallback;
+    }
+  }
+
   private static dispatch() {
     window.dispatchEvent(new Event('gameday_update'));
   }
@@ -51,7 +63,7 @@ class StorageService {
 
   static getUserData(userId: string): Partial<User> | null {
     const data = localStorage.getItem(`${this.USER_PREFIX}${userId}`);
-    return data ? JSON.parse(data) : null;
+    return data ? this.safeParse<Partial<User> | null>(data, null) : null;
   }
 
   static updateUserData(userId: string, data: Partial<User>): Partial<User> {
@@ -62,7 +74,8 @@ class StorageService {
     // Also update the current active user if it's the same
     const currentActiveStr = localStorage.getItem('gameday_user');
     if (currentActiveStr) {
-      const currentActive = JSON.parse(currentActiveStr);
+      const currentActive = this.safeParse(currentActiveStr, null);
+      if (!currentActive) return updated;
       if (currentActive.id === userId) {
         localStorage.setItem('gameday_user', JSON.stringify({ ...currentActive, ...data }));
       }
@@ -77,7 +90,7 @@ class StorageService {
     const data = localStorage.getItem(this.ANNOUNCEMENTS_KEY);
     if (!data) return [];
     
-    const all: Announcement[] = JSON.parse(data);
+    const all: Announcement[] = this.safeParse(data, []);
     return all.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
   }
 
@@ -113,7 +126,7 @@ class StorageService {
 
   static getTeams(): any[] {
     const data = localStorage.getItem('gameday_teams');
-    return data ? JSON.parse(data) : [];
+    return this.safeParse(data, []);
   }
 
   static addTeam(team: any) {
@@ -140,7 +153,7 @@ class StorageService {
     for (let i = 0; i < localStorage.length; i++) {
         const key = localStorage.key(i);
         if (key?.startsWith(this.USER_PREFIX)) {
-            const user = JSON.parse(localStorage.getItem(key) || '{}');
+            const user = this.safeParse(localStorage.getItem(key), {} as any);
             if (user.role === 'coach') {
                 const existingIdx = coaches.findIndex(c => c.id === user.id);
                 if (existingIdx !== -1) {
@@ -159,7 +172,7 @@ class StorageService {
 
   static getChats(): any[] {
     const data = localStorage.getItem('gameday_chats');
-    return data ? JSON.parse(data) : [];
+    return this.safeParse(data, []);
   }
 
   static createChat(chat: any) {
@@ -173,7 +186,7 @@ class StorageService {
 
   static getAttendance(): Record<string, AttendanceRecord[]> {
     const data = localStorage.getItem(this.ATTENDANCE_KEY);
-    return data ? JSON.parse(data) : {};
+    return this.safeParse(data, {});
   }
 
   static updateAttendance(eventId: string, userId: string, userName: string, status: 'going' | 'absent' | null, reason?: string) {
@@ -204,7 +217,17 @@ class StorageService {
     }
 
     localStorage.setItem(this.ATTENDANCE_KEY, JSON.stringify(allAttendance));
-    FirestoreService.saveAttendance(eventId, userId, { name: userName, status }).catch(console.error);
+    // Sync to Firestore with all fields
+    if (status === null) {
+      // User removed their response — delete from Firestore
+      deleteDoc(doc(db, 'attendance', `${eventId}_${userId}`)).catch(console.error);
+    } else {
+      setDoc(doc(db, 'attendance', `${eventId}_${userId}`), {
+        eventId, userId, userName, status,
+        ...(reason ? { reason } : {}),
+        timestamp: new Date().toISOString(),
+      }).catch(console.error);
+    }
     this.dispatch();
   }
 
@@ -212,7 +235,7 @@ class StorageService {
 
   static getEvents(): any[] {
     const data = localStorage.getItem(this.EVENTS_KEY);
-    return data ? JSON.parse(data) : [];
+    return this.safeParse(data, []);
   }
 
   static addEvent(event: any) {
@@ -250,7 +273,8 @@ class StorageService {
     const key = `gameday_lineups_${teamId}`;
     const stored = localStorage.getItem(key);
     if (stored) {
-      const lineups = JSON.parse(stored);
+      const lineups = this.safeParse(stored, []);
+      if (!lineups.length) return [];
       // Migrate old format (starting/reserves at top level OR in squads) to players array
       return lineups.map((l: any) => {
         let squads = l.squads;
@@ -295,19 +319,71 @@ class StorageService {
     if (idx >= 0) { lineups[idx] = lineup; } else { lineups.push(lineup); }
     localStorage.setItem(`gameday_lineups_${teamId}`, JSON.stringify(lineups));
     this.dispatch();
+    // Sync to Firestore
+    this.syncLineupToFirestore(teamId, lineup).catch(console.error);
   }
 
   static deleteLineup(teamId: string, lineupId: string): void {
     const lineups = this.getLineups(teamId).filter((l: any) => l.id !== lineupId);
     localStorage.setItem(`gameday_lineups_${teamId}`, JSON.stringify(lineups));
     this.dispatch();
+    // Remove from Firestore
+    deleteDoc(doc(db, 'lineups', `${teamId}_${lineupId}`)).catch(console.error);
+  }
+
+  // ── Firestore: Lineups ──────────────────────────────────
+  static async syncLineupToFirestore(teamId: string, lineup: any): Promise<void> {
+    try {
+      await setDoc(doc(db, 'lineups', `${teamId}_${lineup.id}`), {
+        teamId, ...lineup, updatedAt: new Date().toISOString()
+      });
+    } catch (e) {
+      console.warn('[Firestore] Lineup sync failed:', e);
+    }
+  }
+
+  static async getAllLineupsFromFirestore(teamId: string): Promise<any[]> {
+    try {
+      const q = query(collection(db, 'lineups'), where('teamId', '==', teamId));
+      const snap = await getDocs(q);
+      return snap.docs.map(d => d.data());
+    } catch (e) {
+      console.warn('[Firestore] Failed to fetch lineups:', e);
+      return [];
+    }
+  }
+
+  static async hydrateLineups(teamIds: string[]): Promise<void> {
+    for (const teamId of teamIds) {
+      try {
+        const firestoreLineups = await this.getAllLineupsFromFirestore(teamId);
+        if (firestoreLineups.length > 0) {
+          const localLineups = this.getLineups(teamId);
+          const localIds = new Set(localLineups.map((l: any) => String(l.id)));
+          const firestoreIds = new Set(firestoreLineups.map((l: any) => String(l.id)));
+          // Merge: Firestore wins for existing, keep local-only ones
+          const merged = [
+            ...firestoreLineups,
+            ...localLineups.filter((l: any) => !firestoreIds.has(String(l.id)))
+          ];
+          localStorage.setItem(`gameday_lineups_${teamId}`, JSON.stringify(merged));
+          // Push local-only lineups to Firestore
+          const localOnly = localLineups.filter((l: any) => !firestoreIds.has(String(l.id)));
+          for (const lineup of localOnly) {
+            this.syncLineupToFirestore(teamId, lineup).catch(console.error);
+          }
+        }
+      } catch (e) {
+        console.warn(`[Sync] Lineup hydration failed for team ${teamId}:`, e);
+      }
+    }
   }
 
   // --- Lineup Archive ---
 
   static getArchivedLineups(teamId: string): any[] {
     const data = localStorage.getItem(`gameday_archived_lineups_${teamId}`);
-    return data ? JSON.parse(data) : [];
+    return this.safeParse(data, []);
   }
 
   static archiveLineup(teamId: string, snapshot: any): void {
@@ -463,7 +539,7 @@ class StorageService {
         console.warn('Could not sync logo URL to Firestore:', e);
       }
       // Update gameday_custom_teams in localStorage
-      const customTeams = JSON.parse(localStorage.getItem('gameday_custom_teams') || '[]');
+      const customTeams = this.safeParse(localStorage.getItem('gameday_custom_teams'), []);
       const updated = customTeams.map((t: any) => t.id === teamId ? { ...t, logo: url } : t);
       localStorage.setItem('gameday_custom_teams', JSON.stringify(updated));
       window.dispatchEvent(new Event('gameday_update'));
@@ -484,10 +560,10 @@ class StorageService {
   }
 
   static getTeamMembers(teamId: string): any[] {
-    return JSON.parse(localStorage.getItem(`gameday_team_members_${teamId}`) || '[]');
+    return this.safeParse(localStorage.getItem(`gameday_team_members_${teamId}`), []);
   }
 
-  static addTeamMember(teamId: string, member: { id: string; name: string; avatar?: string; position?: string; role?: string }) {
+  static addTeamMember(teamId: string, member: { id: string; name: string; avatar?: string; position?: string; role?: string; parentId?: string; parentName?: string }) {
     const members = this.getTeamMembers(teamId);
     if (!members.find(m => m.id === member.id)) {
       members.push(member);
@@ -499,6 +575,83 @@ class StorageService {
   static removeTeamMember(teamId: string, memberId: string) {
     const members = this.getTeamMembers(teamId).filter((m: any) => m.id !== memberId);
     localStorage.setItem(`gameday_team_members_${teamId}`, JSON.stringify(members));
+  }
+
+  // ── Firebase Storage: Team Resources ─────────────────────
+  static async uploadTeamResource(teamId: string, file: File): Promise<any> {
+    try {
+      const { ref, uploadBytes, getDownloadURL } = await import('firebase/storage');
+      const { storage } = await import('../firebase');
+      const fileId = `res_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+      const ext = file.name.split('.').pop()?.toLowerCase() || '';
+      const storageRef = ref(storage, `team-resources/${teamId}/${fileId}_${file.name}`);
+      await uploadBytes(storageRef, file);
+      const downloadUrl = await getDownloadURL(storageRef);
+
+      const sizeKB = file.size / 1024;
+      const sizeStr = sizeKB >= 1024 ? `${(sizeKB / 1024).toFixed(1)} MB` : `${Math.round(sizeKB)} KB`;
+      const typeMap: Record<string, string> = { pdf: 'PDF', doc: 'Word', docx: 'Word', xls: 'Excel', xlsx: 'Excel', ppt: 'PowerPoint', pptx: 'PowerPoint', txt: 'Text', csv: 'CSV', png: 'Image', jpg: 'Image', jpeg: 'Image' };
+
+      const resource = {
+        id: fileId,
+        name: file.name,
+        size: sizeStr,
+        type: typeMap[ext] || ext.toUpperCase(),
+        ext,
+        url: downloadUrl,
+        storagePath: `team-resources/${teamId}/${fileId}_${file.name}`,
+        uploadedAt: new Date().toISOString(),
+        uploadedBy: this.safeParse(localStorage.getItem('gameday_user'), {} as any).name || 'Unknown',
+      };
+
+      // Save metadata to Firestore
+      await setDoc(doc(db, 'teamResources', fileId), { teamId, ...resource });
+
+      // Update local cache
+      const local = this.safeParse(localStorage.getItem(`gameday_resources_${teamId}`), []);
+      local.unshift(resource);
+      localStorage.setItem(`gameday_resources_${teamId}`, JSON.stringify(local));
+
+      return resource;
+    } catch (e) {
+      console.error('[Storage] Resource upload failed:', e);
+      throw e;
+    }
+  }
+
+  static async deleteTeamResource(teamId: string, resourceId: string, storagePath?: string): Promise<void> {
+    try {
+      // Delete from Firebase Storage
+      if (storagePath) {
+        const { ref, deleteObject } = await import('firebase/storage');
+        const { storage } = await import('../firebase');
+        await deleteObject(ref(storage, storagePath)).catch(console.warn);
+      }
+      // Delete metadata from Firestore
+      await deleteDoc(doc(db, 'teamResources', resourceId)).catch(console.warn);
+      // Update local cache
+      const local = this.safeParse(localStorage.getItem(`gameday_resources_${teamId}`), []);
+      const updated = local.filter((r: any) => r.id !== resourceId);
+      localStorage.setItem(`gameday_resources_${teamId}`, JSON.stringify(updated));
+    } catch (e) {
+      console.error('[Storage] Resource delete failed:', e);
+      throw e;
+    }
+  }
+
+  static async hydrateTeamResources(teamId: string): Promise<any[]> {
+    try {
+      const q = query(collection(db, 'teamResources'), where('teamId', '==', teamId));
+      const snap = await getDocs(q);
+      const resources = snap.docs.map(d => d.data());
+      if (resources.length > 0) {
+        localStorage.setItem(`gameday_resources_${teamId}`, JSON.stringify(resources));
+      }
+      return resources;
+    } catch (e) {
+      console.warn('[Firestore] Resource hydration failed:', e);
+      return this.safeParse(localStorage.getItem(`gameday_resources_${teamId}`), []);
+    }
   }
 
   // ── Firestore: Teams ──────────────────────────────────────
@@ -588,7 +741,7 @@ class StorageService {
 
     try {
       // ── Events ──
-      const localEvents: any[] = JSON.parse(localStorage.getItem(this.EVENTS_KEY) || '[]');
+      const localEvents: any[] = this.safeParse(localStorage.getItem(this.EVENTS_KEY), []);
       const relevantEvents = localEvents.filter((e: any) => teamSet.has(e.teamId));
       if (relevantEvents.length > 0) {
         const existingSnap = await getDocs(collection(db, 'events'));
@@ -605,7 +758,14 @@ class StorageService {
       const attendanceEntries: any[] = [];
       for (const [eventId, records] of Object.entries(localAttendance)) {
         for (const record of (records as any[])) {
-          attendanceEntries.push({ eventId, ...record });
+          attendanceEntries.push({
+            eventId,
+            userId: record.userId,
+            userName: record.userName || record.name || '',
+            status: record.status,
+            ...(record.reason ? { reason: record.reason } : {}),
+            timestamp: record.timestamp || new Date().toISOString(),
+          });
         }
       }
       if (attendanceEntries.length > 0) {
@@ -684,10 +844,37 @@ class StorageService {
     });
   }
 
+  /** Normalize a Firestore attendance record to match local AttendanceRecord shape */
+  private static normalizeAttendanceRecord(record: any): any {
+    return {
+      eventId: record.eventId,
+      userId: record.userId,
+      userName: record.userName || record.name || '',
+      status: record.status,
+      ...(record.reason ? { reason: record.reason } : {}),
+      timestamp: record.timestamp || record.updatedAt?.toDate?.()?.toISOString?.() || new Date().toISOString(),
+    };
+  }
+
+  private static mergeAttendanceRecords(localAttendance: Record<string, any[]>, firestoreRecords: any[]): void {
+    for (const raw of firestoreRecords) {
+      const record = this.normalizeAttendanceRecord(raw);
+      const eid = record.eventId;
+      if (!localAttendance[eid]) localAttendance[eid] = [];
+      const idx = localAttendance[eid].findIndex((a: any) => a.userId === record.userId);
+      if (idx !== -1) {
+        // Firestore wins — overwrite local with normalized record
+        localAttendance[eid][idx] = record;
+      } else {
+        localAttendance[eid].push(record);
+      }
+    }
+  }
+
   private static async hydrateAttendance(teamIds: string[]): Promise<void> {
     // Attendance is keyed by eventId — fetch events first to know which eventIds belong to our teams
     try {
-      const localEvents: any[] = JSON.parse(localStorage.getItem(this.EVENTS_KEY) || '[]');
+      const localEvents: any[] = this.safeParse(localStorage.getItem(this.EVENTS_KEY), []);
       const teamSet = new Set(teamIds);
       const relevantEventIds = new Set(
         localEvents.filter((e: any) => teamSet.has(e.teamId)).map((e: any) => String(e.id))
@@ -697,23 +884,14 @@ class StorageService {
       const firestoreRecords = snap.docs.map(d => d.data()).filter((r: any) => relevantEventIds.has(String(r.eventId)));
 
       const localAttendance = this.getAttendance();
-      for (const record of firestoreRecords) {
-        const eid = record.eventId;
-        if (!localAttendance[eid]) localAttendance[eid] = [];
-        const idx = localAttendance[eid].findIndex((a: any) => a.userId === record.userId);
-        if (idx !== -1) {
-          localAttendance[eid][idx] = { ...localAttendance[eid][idx], ...record };
-        } else {
-          localAttendance[eid].push(record);
-        }
-      }
+      this.mergeAttendanceRecords(localAttendance, firestoreRecords);
       localStorage.setItem(this.ATTENDANCE_KEY, JSON.stringify(localAttendance));
     } catch (e) {
       console.warn('[StorageService] Attendance hydration failed:', e);
     }
 
     this.attendanceUnsubscribe = onSnapshot(collection(db, 'attendance'), (snap) => {
-      const localEvents: any[] = JSON.parse(localStorage.getItem(this.EVENTS_KEY) || '[]');
+      const localEvents: any[] = this.safeParse(localStorage.getItem(this.EVENTS_KEY), []);
       const teamSet = new Set(this.hydratedTeamIds);
       const relevantEventIds = new Set(
         localEvents.filter((e: any) => teamSet.has(e.teamId)).map((e: any) => String(e.id))
@@ -721,24 +899,14 @@ class StorageService {
 
       const firestoreRecords = snap.docs.map(d => d.data()).filter((r: any) => relevantEventIds.has(String(r.eventId)));
       const localAttendance = this.getAttendance();
-
-      for (const record of firestoreRecords) {
-        const eid = record.eventId;
-        if (!localAttendance[eid]) localAttendance[eid] = [];
-        const idx = localAttendance[eid].findIndex((a: any) => a.userId === record.userId);
-        if (idx !== -1) {
-          localAttendance[eid][idx] = { ...localAttendance[eid][idx], ...record };
-        } else {
-          localAttendance[eid].push(record);
-        }
-      }
+      this.mergeAttendanceRecords(localAttendance, firestoreRecords);
       localStorage.setItem(this.ATTENDANCE_KEY, JSON.stringify(localAttendance));
       this.dispatch();
     });
   }
 
   private static mergeIntoLocal(key: string, firestoreItems: any[]): void {
-    const localItems: any[] = JSON.parse(localStorage.getItem(key) || '[]');
+    const localItems: any[] = this.safeParse(localStorage.getItem(key), []);
     const firestoreIds = new Set(firestoreItems.map((item: any) => String(item.id)));
     const localOnly = localItems.filter((item: any) => !firestoreIds.has(String(item.id)));
     const merged = [...firestoreItems, ...localOnly];
@@ -791,7 +959,7 @@ class StorageService {
   static async hydrateChildren(userId: string): Promise<void> {
     try {
       // 1. Push any local-only children up to Firestore first
-      const localChildren: any[] = JSON.parse(localStorage.getItem('gameday_children') || '[]');
+      const localChildren: any[] = this.safeParse(localStorage.getItem('gameday_children'), []);
       const myLocalChildren = localChildren.filter((c: any) => c.parentIds?.includes(userId));
 
       if (myLocalChildren.length > 0) {
@@ -813,7 +981,7 @@ class StorageService {
       );
       if (relevant.length === 0) return;
 
-      const freshLocal: any[] = JSON.parse(localStorage.getItem('gameday_children') || '[]');
+      const freshLocal: any[] = this.safeParse(localStorage.getItem('gameday_children'), []);
       const localIds = new Set(freshLocal.map((c: any) => c.id));
 
       for (const child of relevant) {
@@ -836,11 +1004,11 @@ class StorageService {
   // ── Firestore: Full Delete Team ───────────────────────────
   static async deleteTeam(teamId: string): Promise<void> {
     // Remove from localStorage
-    const customTeams = JSON.parse(localStorage.getItem('gameday_custom_teams') || '[]');
+    const customTeams = this.safeParse(localStorage.getItem('gameday_custom_teams'), []);
     localStorage.setItem('gameday_custom_teams', JSON.stringify(
       customTeams.filter((t: any) => t.id !== teamId)
     ));
-    const legacyTeams = JSON.parse(localStorage.getItem('gameday_teams') || '[]');
+    const legacyTeams = this.safeParse(localStorage.getItem('gameday_teams'), []);
     localStorage.setItem('gameday_teams', JSON.stringify(
       legacyTeams.filter((t: any) => t.id !== teamId)
     ));
@@ -848,18 +1016,18 @@ class StorageService {
     localStorage.removeItem(`gameday_team_logo_${teamId}`);
     localStorage.removeItem(`gameday_team_name_${teamId}`);
 
-    const announcements = JSON.parse(localStorage.getItem('gameday_announcements') || '[]');
+    const announcements = this.safeParse(localStorage.getItem('gameday_announcements'), []);
     localStorage.setItem('gameday_announcements', JSON.stringify(
       announcements.filter((a: any) => a.teamId !== teamId)
     ));
-    const events = JSON.parse(localStorage.getItem('gameday_events') || '[]');
+    const events = this.safeParse(localStorage.getItem('gameday_events'), []);
     localStorage.setItem('gameday_events', JSON.stringify(
       events.filter((e: any) => e.teamId !== teamId)
     ));
     Object.keys(localStorage)
       .filter(key => key.startsWith('gameday_user_'))
       .forEach(key => {
-        const userData = JSON.parse(localStorage.getItem(key) || '{}');
+        const userData = this.safeParse(localStorage.getItem(key), {} as any);
         if (userData.teamIds?.includes(teamId)) {
           userData.teamIds = userData.teamIds.filter((id: string) => id !== teamId);
           localStorage.setItem(key, JSON.stringify(userData));
@@ -868,12 +1036,12 @@ class StorageService {
     Object.keys(localStorage)
       .filter(key => key.startsWith('gameday_role_') && key.endsWith(`_${teamId}`))
       .forEach(key => localStorage.removeItem(key));
-    const activeUser = JSON.parse(localStorage.getItem('gameday_user') || '{}');
+    const activeUser = this.safeParse(localStorage.getItem('gameday_user'), {} as any);
     if (activeUser.teamIds?.includes(teamId)) {
       activeUser.teamIds = activeUser.teamIds.filter((id: string) => id !== teamId);
       localStorage.setItem('gameday_user', JSON.stringify(activeUser));
     }
-    const children = JSON.parse(localStorage.getItem('gameday_children') || '[]');
+    const children = this.safeParse(localStorage.getItem('gameday_children'), []);
     const updatedChildren = children.map((c: any) => ({
       ...c,
       teamIds: (c.teamIds || []).filter((id: string) => id !== teamId)
@@ -888,7 +1056,7 @@ class StorageService {
     }
 
     // Track deleted mock team IDs so hardcoded teams can be hidden
-    const deletedMocks = JSON.parse(localStorage.getItem('gameday_deleted_mock_teams') || '[]');
+    const deletedMocks = this.safeParse(localStorage.getItem('gameday_deleted_mock_teams'), []);
     if (!deletedMocks.includes(teamId)) {
       deletedMocks.push(teamId);
       localStorage.setItem('gameday_deleted_mock_teams', JSON.stringify(deletedMocks));
