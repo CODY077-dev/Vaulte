@@ -36,9 +36,32 @@ export default function App() {
   const [verifyResending, setVerifyResending] = useState(false);
   const [verifyDevTaps, setVerifyDevTaps] = useState(0);
   const verifyDevTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+
+  // On mount: immediately restore local session if one exists (no Firebase needed)
+  useEffect(() => {
+    const localUser = localStorage.getItem('gameday_user');
+    if (localUser) {
+      try {
+        const parsed = JSON.parse(localUser);
+        if (parsed && parsed.id) {
+          setUser(parsed);
+          setIsLoggedIn(true);
+          setAuthReady(true);
+          setActiveTab("home");
+        }
+      } catch (e) { /* corrupt localStorage — ignore */ }
+    }
+    // Always mark auth as ready so the login screen renders even without Firebase
+    const fallbackTimer = setTimeout(() => setAuthReady(true), 2000);
+    return () => clearTimeout(fallbackTimer);
+  }, []);
 
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+    let unsubscribe: (() => void) | null = null;
+    try {
+    unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+      setAuthReady(true);
       try {
         if (firebaseUser) {
           const userDocRef = doc(db, 'users', firebaseUser.uid);
@@ -97,12 +120,12 @@ export default function App() {
             setUser(appUser);
             localStorage.setItem('gameday_user', JSON.stringify(appUser));
 
-            // Check email verification — block unverified users
-            if (!firebaseUser.emailVerified) {
-              setPendingEmailVerification(true);
-              setIsLoggedIn(false);
-              return; // Don't hydrate or grant access until verified
-            }
+            // Email verification check — DISABLED FOR DEV, re-enable before launch
+            // if (!firebaseUser.emailVerified) {
+            //   setPendingEmailVerification(true);
+            //   setIsLoggedIn(false);
+            //   return;
+            // }
 
             setPendingEmailVerification(false);
             setIsLoggedIn(true);
@@ -222,16 +245,23 @@ export default function App() {
             }
           }
         } else {
-          StorageService.teardownListeners();
-          setUser(null);
-          setIsLoggedIn(false);
-          localStorage.removeItem('gameday_user');
+          // Only log out if we don't have a locally-authenticated user
+          const localUser = localStorage.getItem('gameday_user');
+          if (!localUser) {
+            StorageService.teardownListeners();
+            setUser(null);
+            setIsLoggedIn(false);
+          }
         }
       } catch (err) {
         console.error("Auth state change error:", err);
       }
     });
-    return () => unsubscribe();
+    } catch (e) {
+      console.warn('Firebase auth listener failed — running in offline/demo mode:', e);
+      setAuthReady(true);
+    }
+    return () => { if (unsubscribe) unsubscribe(); };
   }, []);
 
   const handleLogin = (user: User) => {
@@ -243,7 +273,7 @@ export default function App() {
   };
 
   const handleLogout = async () => {
-    await signOut(auth);
+    try { await signOut(auth); } catch (e) { /* no Firebase session — fine */ }
     setIsLoggedIn(false);
     setUser(null);
     // Only clear user session — preserve teams and role keys for restore
@@ -302,7 +332,7 @@ export default function App() {
         }
         return <Teams user={user} memberRoles={memberRoles} setMemberRoles={setMemberRoles} onTabChange={handleTabChange} onUpdateUser={handleUpdateUser} />;
       case "chat":
-        return user ? <Chat user={user} memberRoles={memberRoles} onChatOpen={setIsChatOpen} onUnreadCount={setChatUnreadCount} /> : null;
+        return user ? <Chat user={user} memberRoles={memberRoles} onChatOpen={setIsChatOpen} onUnreadCount={setChatUnreadCount} onTabChange={handleTabChange} /> : null;
       case "schedule":
         return <Schedule user={user} onTabChange={handleTabChange} />;
       case "games":
@@ -346,7 +376,14 @@ export default function App() {
   // Build screen content based on auth state
   let screenContent: React.ReactNode;
 
-  if (!isLoggedIn) {
+  if (!isLoggedIn && !authReady) {
+    // Show a loading spinner while waiting for auth to resolve
+    screenContent = (
+      <div className="min-h-full flex flex-col items-center justify-center bg-[#f8fafc]">
+        <div className="w-8 h-8 border-3 border-primary/20 border-t-primary rounded-full animate-spin" />
+      </div>
+    );
+  } else if (!isLoggedIn) {
     if (pendingEmailVerification && auth.currentUser) {
       screenContent = (
         <div className="min-h-full flex flex-col items-center justify-center bg-[#f8fafc] p-6">
@@ -434,6 +471,7 @@ export default function App() {
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: -10 }}
             transition={{ duration: 0.2 }}
+            className="pt-[max(env(safe-area-inset-top),2.75rem)] bg-white"
           >
             {renderContent()}
           </motion.div>
@@ -448,15 +486,15 @@ export default function App() {
       {/* iPhone frame — only visible on desktop (md+) browsers */}
       <div className="hidden md:flex items-center justify-center min-h-screen py-8">
         <div className="relative">
-          {/* Phone bezel */}
-          <div className="rounded-[3rem] border-[6px] border-slate-900 bg-slate-900 shadow-2xl shadow-black/30 overflow-hidden" style={{ width: 393, height: 852 }}>
+          {/* Phone bezel — transform makes it the containing block so the fixed bottom nav anchors to the frame, not the viewport. id used as a portal target so dialogs stay inside the frame. */}
+          <div id="phone-frame" className="rounded-[3rem] border-[6px] border-slate-900 bg-slate-900 shadow-2xl shadow-black/30 overflow-hidden" style={{ width: 393, height: 852, transform: 'translateZ(0)' }}>
             {/* Dynamic Island */}
             <div className="absolute top-2 left-1/2 -translate-x-1/2 z-50">
               <div className="w-[126px] h-[34px] bg-black rounded-full" />
             </div>
             {/* Screen content */}
             <div className="w-full h-full overflow-y-auto overflow-x-hidden bg-white rounded-[2.4rem]">
-              <div className="min-h-full bg-white relative">
+              <div className="min-h-full h-full bg-white relative">
                 {screenContent}
               </div>
             </div>

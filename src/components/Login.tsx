@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { UserRole, User } from "../types";
 import { Button } from "./ui/button";
-import { Trophy, Users, User as UserIcon, LogIn, Building2, Mail, Lock, User as UserCircle, ArrowRight, Calendar, CheckSquare, Square } from "lucide-react";
+import { Trophy, Users, User as UserIcon, LogIn, Mail, Lock, User as UserCircle, ArrowRight, Calendar, CheckSquare, Square } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import { createUserWithEmailAndPassword, signInWithEmailAndPassword, updateProfile, sendPasswordResetEmail, sendEmailVerification } from 'firebase/auth';
 import { doc, setDoc, getDoc } from 'firebase/firestore';
@@ -17,6 +17,7 @@ export default function Login({ onLogin }: LoginProps) {
   const [mode, setMode] = useState<"signin" | "register">("signin");
   const [devTapCount, setDevTapCount] = useState(0);
   const devTapTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [showDevPicker, setShowDevPicker] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
@@ -56,18 +57,34 @@ export default function Login({ onLogin }: LoginProps) {
     e.preventDefault();
     setLoading(true);
     setError(null);
-    try {
-      // Just sign in — onAuthStateChanged in App.tsx handles full hydration
-      await signInWithEmailAndPassword(auth, email, password);
-    } catch (err: any) {
-      console.error(err);
-      if (err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') {
-        setError("Invalid email or password");
-      } else {
-        setError("An error occurred during sign in");
-      }
+
+    // Determine role from email keywords (demo mode — default to player/member)
+    const roleFromEmail = (em: string): UserRole => {
+      const s = em.toLowerCase();
+      if (s.includes('coach')) return 'coach';
+      if (s.includes('club') || s.includes('admin')) return 'club';
+      if (s.includes('parent') || s.includes('supporter')) return 'supporter';
+      if (s.includes('player') || s.includes('member')) return 'player';
+      return 'player';
+    };
+
+    // Skip Firebase auth — create a local user directly for preview/demo
+    if (!email || !password) {
+      setError("Please enter email and password");
       setLoading(false);
+      return;
     }
+
+    const localUser: User = {
+      id: `local-${Date.now()}`,
+      name: email.split('@')[0].replace(/[._]/g, ' ').replace(/\b\w/g, c => c.toUpperCase()),
+      email,
+      role: roleFromEmail(email),
+      roles: {},
+      teamIds: ["team-1", "team-2"],
+    };
+    localStorage.setItem('gameday_user', JSON.stringify(localUser));
+    onLogin(localUser);
   };
 
   const getAge = (dob: string): number => {
@@ -156,41 +173,107 @@ export default function Login({ onLogin }: LoginProps) {
     setResetLoading(false);
   };
 
+  const devProfiles: Record<string, User> = {
+    coach: {
+      id: "dev-coach",
+      name: "Coach Sarah",
+      role: "coach" as UserRole,
+      email: "coach@vaulte.app",
+      teamIds: ["team-1", "team-2"],
+    },
+    player: {
+      id: "dev-player",
+      name: "Cody Johnson",
+      role: "player" as UserRole,
+      email: "player@vaulte.app",
+      teamIds: ["team-1"],
+    },
+    club: {
+      id: "dev-club",
+      name: "Karaka RFC",
+      role: "club" as UserRole,
+      email: "club@vaulte.app",
+      teamIds: ["team-1", "team-2", "team-3"],
+      clubId: "karaka-rfc",
+    },
+    supporter: {
+      id: "dev-supporter",
+      name: "Mike Johnson",
+      role: "supporter" as UserRole,
+      email: "supporter@vaulte.app",
+      teamIds: [],
+    },
+  };
+
+  const seedDevData = () => {
+    const today = new Date();
+    const fmt = (d: Date) => `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    const d = (offset: number) => { const dt = new Date(today); dt.setDate(dt.getDate() + offset); return fmt(dt); };
+
+    const events = [
+      { id: 'dev-evt-1', title: 'Squad Training', type: 'training', date: d(0), time: '17:30', location: 'Kingsford Park, Pitch 2', teamId: 'team-1', teamName: 'Karaka Seniors', notes: 'Full squad — bring mouthguard and boots' },
+      { id: 'dev-evt-2', title: 'Coaches Meeting', type: 'meeting', date: d(1), time: '18:00', location: 'Clubhouse, Room A', teamId: 'team-1', teamName: 'Karaka Seniors', notes: 'Season planning and selection discussion' },
+      { id: 'dev-evt-3', title: 'vs Pukekohe RFC', type: 'match', date: d(3), time: '14:30', location: 'Memorial Stadium', teamId: 'team-1', teamName: 'Karaka Seniors', notes: 'Round 8 — arrive 1hr early for warmup' },
+      { id: 'dev-evt-4', title: 'Club Awards Night', type: 'event', date: d(5), time: '19:00', location: 'Karaka Sports Club', teamId: 'team-1', teamName: 'Karaka Seniors', notes: 'Dress code: smart casual. Partners welcome.' },
+      { id: 'dev-evt-5', title: 'Skills Session', type: 'training', date: d(2), time: '16:00', location: 'Kingsford Park, Pitch 1', teamId: 'team-2', teamName: 'Karaka Colts', notes: 'Focus on lineout and scrummaging' },
+      { id: 'dev-evt-6', title: 'vs Ardmore Marist', type: 'match', date: d(6), time: '13:00', location: 'Ardmore Park', teamId: 'team-2', teamName: 'Karaka Colts', notes: 'Away game — carpool from clubhouse at 11:30' },
+    ];
+    localStorage.setItem('gameday_events', JSON.stringify(events));
+
+    const announcements = [
+      { id: 'dev-ann-1', senderId: 'dev-coach', senderName: 'Coach Sarah', teamId: 'team-1', teamName: 'Karaka Seniors', title: 'Kit collection this Thursday', content: 'New home kits have arrived. Please collect yours from the clubhouse before Thursday training — sizes are labelled at the front desk.', timestamp: new Date(today.getTime() - 2 * 60 * 60 * 1000).toISOString(), clubId: 'karaka-rfc' },
+      { id: 'dev-ann-2', senderId: 'dev-coach', senderName: 'Coach Sarah', teamId: 'team-1', teamName: 'Karaka Seniors', title: 'Carpool for Saturday away game', content: 'We\'re organising carpools to Memorial Stadium. Reply in the team chat if you can offer or need a ride. Meet at the clubhouse at 12:30pm.', timestamp: new Date(today.getTime() - 8 * 60 * 60 * 1000).toISOString(), clubId: 'karaka-rfc' },
+      { id: 'dev-ann-3', senderId: 'dev-club', senderName: 'Karaka RFC', teamId: 'all', teamName: 'All Teams', title: 'Ground closure — Friday', content: 'Kingsford Park will be closed Friday for maintenance. All Friday sessions are cancelled. Normal schedule resumes Saturday.', timestamp: new Date(today.getTime() - 24 * 60 * 60 * 1000).toISOString(), clubId: 'karaka-rfc', isUrgent: true },
+      { id: 'dev-ann-4', senderId: 'dev-coach', senderName: 'Coach Sarah', teamId: 'team-1', teamName: 'Karaka Seniors', title: 'Team photo next week', content: 'Team photo for the yearbook will be taken before training on Tuesday. Wear your match-day jersey.', timestamp: new Date(today.getTime() - 48 * 60 * 60 * 1000).toISOString(), clubId: 'karaka-rfc' },
+      { id: 'dev-ann-5', senderId: 'dev-player', senderName: 'Cody Johnson', teamId: 'team-1', teamName: 'Karaka Seniors', title: 'Lost mouthguard', content: 'Left my blue mouthguard case at training yesterday. Has anyone seen it? Check the changing rooms.', timestamp: new Date(today.getTime() - 5 * 60 * 60 * 1000).toISOString(), clubId: 'karaka-rfc' },
+    ];
+    localStorage.setItem('gameday_announcements', JSON.stringify(announcements));
+
+    const attendance: Record<string, any[]> = {
+      'dev-evt-1': [
+        { eventId: 'dev-evt-1', userId: 'dev-coach', userName: 'Coach Sarah', status: 'going', timestamp: new Date().toISOString() },
+        { eventId: 'dev-evt-1', userId: 'dev-player', userName: 'Cody Johnson', status: 'going', timestamp: new Date().toISOString() },
+        { eventId: 'dev-evt-1', userId: 'p2', userName: 'James Wilson', status: 'going', timestamp: new Date().toISOString() },
+        { eventId: 'dev-evt-1', userId: 'p3', userName: 'Liam Davis', status: 'absent', reason: 'Work', timestamp: new Date().toISOString() },
+        { eventId: 'dev-evt-1', userId: 'p4', userName: 'Tom Harris', status: 'going', timestamp: new Date().toISOString() },
+      ],
+      'dev-evt-3': [
+        { eventId: 'dev-evt-3', userId: 'dev-coach', userName: 'Coach Sarah', status: 'going', timestamp: new Date().toISOString() },
+        { eventId: 'dev-evt-3', userId: 'dev-player', userName: 'Cody Johnson', status: 'going', timestamp: new Date().toISOString() },
+        { eventId: 'dev-evt-3', userId: 'p2', userName: 'James Wilson', status: 'absent', reason: 'Injured', timestamp: new Date().toISOString() },
+      ],
+    };
+    localStorage.setItem('gameday_attendance', JSON.stringify(attendance));
+  };
+
   const handleDevTap = () => {
     const newCount = devTapCount + 1;
     setDevTapCount(newCount);
     if (devTapTimer.current) clearTimeout(devTapTimer.current);
     if (newCount >= 3) {
       setDevTapCount(0);
-      const devUser: User = {
-        id: "dev-cody",
-        name: "Cody (Dev)",
-        role: "coach" as UserRole,
-        email: "cody@vaulte.app",
-        teamIds: ["team-1", "team-2"],
-      };
-      onLogin(devUser);
+      setShowDevPicker(true);
       return;
     }
     devTapTimer.current = setTimeout(() => setDevTapCount(0), 800);
   };
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-[#f8fafc] p-6 relative overflow-hidden">
-      <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-primary/5 rounded-full blur-3xl" />
-      <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-primary/5 rounded-full blur-3xl" />
+    <div className="h-full min-h-full flex flex-col items-center bg-[#f8fafc] px-6 pb-8 relative overflow-y-auto">
+      <div className="fixed top-[-10%] left-[-10%] w-[40%] h-[40%] bg-primary/5 rounded-full blur-3xl pointer-events-none" />
+      <div className="fixed bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-primary/5 rounded-full blur-3xl pointer-events-none" />
 
       <motion.div
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        className="w-full max-w-sm z-10"
+        className="w-full max-w-sm z-10 mt-[7vh]"
       >
-        <div className="text-center mb-6">
+        <div className="text-center mb-4">
           <motion.div
             initial={{ opacity: 0, y: -10 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5 }}
-            className="mx-auto mb-4 flex items-center justify-center"
+            className="mx-auto mb-2 flex items-center justify-center"
           >
             <img
               src="https://firebasestorage.googleapis.com/v0/b/game-day-app-115a4.firebasestorage.app/o/ChatGPT%20Image%20May%2026%2C%202026%2C%2009_39_58%20AM.png?alt=media&token=49148045-64fc-4c46-a686-f7cc4d97eeea"
@@ -220,7 +303,7 @@ export default function Login({ onLogin }: LoginProps) {
                     placeholder="Full name"
                     value={name}
                     onChange={(e) => setName(e.target.value)}
-                    className="pl-12 h-14 bg-white rounded-2xl border-slate-100 font-medium text-base placeholder:text-slate-300 tracking-wide focus:ring-0 focus:outline-none"
+                    className="pl-12 h-14 bg-slate-50 rounded-2xl border-slate-100 font-medium text-base placeholder:text-slate-300 tracking-wide focus:ring-0 focus:outline-none"
                   />
                 </div>
 
@@ -232,7 +315,7 @@ export default function Login({ onLogin }: LoginProps) {
                     value={dateOfBirth}
                     onChange={(e) => setDateOfBirth(e.target.value)}
                     max={new Date().toISOString().split('T')[0]}
-                    className="pl-12 h-14 bg-white rounded-2xl border-slate-100 font-medium text-base placeholder:text-slate-300 tracking-wide focus:ring-0 focus:outline-none"
+                    className={`pl-12 h-14 bg-slate-50 rounded-2xl border-slate-100 font-medium text-base placeholder:text-slate-300 tracking-wide focus:ring-0 focus:outline-none [color-scheme:light] ${dateOfBirth ? 'text-slate-700' : 'text-slate-300'}`}
                     required
                   />
                 </div>
@@ -247,7 +330,7 @@ export default function Login({ onLogin }: LoginProps) {
               placeholder="Email address"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              className="pl-12 h-14 bg-white rounded-2xl border-slate-100 font-medium text-base placeholder:text-slate-300 tracking-wide focus:ring-0 focus:outline-none"
+              className="pl-12 h-14 bg-slate-50 rounded-2xl border-slate-100 font-medium text-base placeholder:text-slate-300 tracking-wide focus:ring-0 focus:outline-none"
               required
             />
           </div>
@@ -259,7 +342,7 @@ export default function Login({ onLogin }: LoginProps) {
               placeholder="Password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              className="pl-12 h-14 bg-white rounded-2xl border-slate-100 font-medium text-base placeholder:text-slate-300 tracking-wide focus:ring-0 focus:outline-none"
+              className="pl-12 h-14 bg-slate-50 rounded-2xl border-slate-100 font-medium text-base placeholder:text-slate-300 tracking-wide focus:ring-0 focus:outline-none"
               required
             />
           </div>
@@ -280,25 +363,9 @@ export default function Login({ onLogin }: LoginProps) {
                     placeholder="Confirm password"
                     value={confirmPassword}
                     onChange={(e) => setConfirmPassword(e.target.value)}
-                    className="pl-12 h-14 bg-white rounded-2xl border-slate-100 font-medium text-base placeholder:text-slate-300 tracking-wide focus:ring-0 focus:outline-none"
+                    className="pl-12 h-14 bg-slate-50 rounded-2xl border-slate-100 font-medium text-base placeholder:text-slate-300 tracking-wide focus:ring-0 focus:outline-none"
                     required
                   />
-                </div>
-
-                <div className="flex items-center gap-3 h-14 px-4 bg-white rounded-2xl border border-slate-100">
-                  <Building2 className="w-4 h-4 text-slate-400 flex-shrink-0" />
-                  <span className="font-medium text-base text-slate-500 flex-1">Signing up as a Club Admin?</span>
-                  <button
-                    type="button"
-                    onClick={() => setSelectedRole(selectedRole === 'club' ? 'player' : 'club')}
-                    className={`w-10 h-6 rounded-full transition-all flex-shrink-0 ${
-                      selectedRole === 'club' ? 'bg-primary' : 'bg-slate-200'
-                    }`}
-                  >
-                    <div className={`w-4 h-4 bg-white rounded-full shadow transition-all mx-1 ${
-                      selectedRole === 'club' ? 'translate-x-4' : 'translate-x-0'
-                    }`} />
-                  </button>
                 </div>
 
                 <button
@@ -391,7 +458,7 @@ export default function Login({ onLogin }: LoginProps) {
           </div>
         </form>
 
-        <div className="mt-12 flex flex-col items-center gap-4">
+        <div className="mt-4 flex flex-col items-center gap-4">
           <div className="w-8 h-1 bg-slate-100 rounded-full" />
         </div>
       </motion.div>
@@ -527,6 +594,58 @@ export default function Login({ onLogin }: LoginProps) {
                     </Button>
                   </form>
                 )}
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+
+      {/* Dev Role Picker */}
+      <AnimatePresence>
+        {showDevPicker && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 bg-black/50 z-[80]"
+              onClick={() => setShowDevPicker(false)}
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[90] w-[92%] max-w-sm bg-white rounded-[2rem] shadow-2xl overflow-hidden"
+            >
+              <div className="bg-slate-900 p-6 flex items-center justify-between">
+                <h2 className="text-white text-sm font-black uppercase tracking-widest">Dev Login</h2>
+                <button onClick={() => setShowDevPicker(false)} className="text-white/70 hover:text-white">
+                  <span className="text-lg">&times;</span>
+                </button>
+              </div>
+              <div className="p-4 space-y-2">
+                {[
+                  { key: 'coach', icon: '🏋️', label: 'Coach', desc: 'Coach Sarah — 2 teams' },
+                  { key: 'player', icon: '⚽', label: 'Player', desc: 'Cody Johnson — 1 team' },
+                  { key: 'club', icon: '🏟️', label: 'Sports Club', desc: 'Karaka RFC — 3 teams' },
+                  { key: 'supporter', icon: '📣', label: 'Supporter', desc: 'Mike Johnson — parent view' },
+                ].map((item) => (
+                  <button
+                    key={item.key}
+                    onClick={() => {
+                      setShowDevPicker(false);
+                      seedDevData();
+                      onLogin(devProfiles[item.key]);
+                    }}
+                    className="w-full flex items-center gap-4 p-4 rounded-2xl bg-slate-50 hover:bg-slate-100 active:scale-[0.98] transition-all text-left"
+                  >
+                    <span className="text-2xl">{item.icon}</span>
+                    <div>
+                      <p className="text-sm font-black text-slate-900 uppercase tracking-tight">{item.label}</p>
+                      <p className="text-[11px] text-slate-400 font-medium">{item.desc}</p>
+                    </div>
+                  </button>
+                ))}
               </div>
             </motion.div>
           </>

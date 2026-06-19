@@ -832,7 +832,7 @@ export default function ClubTeams({ user, onUpdateUser, onTabChange }: ClubTeams
   };
 
   return (
-    <div className="bg-slate-50 min-h-screen pb-24">
+    <div className="bg-slate-50 min-h-full pb-24">
       {renderRosterModal()}
       <div className="pt-6 pb-4 px-4 space-y-6">
         <div className="flex justify-between items-end px-2">

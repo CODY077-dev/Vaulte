@@ -691,7 +691,7 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
   };
 
   return (
-    <div className="bg-white min-h-screen pb-24 relative">
+    <div className="bg-white min-h-full pb-24 relative">
       {selectedTeamId && selectedTeam ? (
         <>
         <AnimatePresence mode="wait">
@@ -778,7 +778,7 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                             <DialogTrigger render={<Button variant="ghost" size="icon" className="rounded-full bg-slate-50 hover:bg-primary/10 hover:text-primary transition-all" />}>
                               <Plus className="w-5 h-5" />
                             </DialogTrigger>
-                            <DialogContent className="sm:max-w-[400px] rounded-[2.5rem] border-none p-0 overflow-hidden">
+                            <DialogContent className="sm:max-w-[400px] rounded-[2.5rem] border-none p-0 overflow-hidden max-h-[90%] flex flex-col">
                               <div className="p-6 bg-slate-900 text-white">
                                 <DialogTitle className="text-xl font-black uppercase italic">Assign Team Responsibilities</DialogTitle>
                                 <DialogDescription className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mt-1">
@@ -1109,7 +1109,7 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: -20 }}
-              className="bg-white min-h-screen"
+              className="bg-white min-h-full"
             >
               <div className="p-4 flex items-center gap-4 border-b border-slate-100">
                 <Button 
@@ -1144,7 +1144,7 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: -20 }}
-              className="bg-white min-h-screen"
+              className="bg-white min-h-full"
             >
               <div className="p-4 flex items-center gap-4 border-b border-slate-100">
                 <Button
@@ -1519,7 +1519,7 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: -20 }}
-              className="bg-white min-h-screen"
+              className="bg-white min-h-full"
             >
               <div className="p-4 flex items-center gap-4 border-b border-slate-100">
                 <Button 
@@ -1809,7 +1809,7 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: -20 }}
-              className="bg-white min-h-screen"
+              className="bg-white min-h-full"
             >
               <div className="p-4 flex items-center gap-4 border-b border-slate-100">
                 <Button 
@@ -2167,7 +2167,7 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0, x: -20 }}
-              className="bg-white min-h-screen"
+              className="bg-white min-h-full"
             >
               {/* LINEUP LIST VIEW */}
               {!activeLineupId ? (
@@ -2320,7 +2320,7 @@ export default function Teams({ user, memberRoles, setMemberRoles, onTabChange, 
                   )}
                 </div>
               ) : activeLineup && (
-                <div className="flex flex-col min-h-screen bg-slate-50">
+                <div className="flex flex-col min-h-full bg-slate-50">
                   <div className="p-4 flex items-center gap-4 border-b border-slate-100 bg-white sticky top-0 z-40">
                         <Button variant="ghost" size="icon" onClick={() => setActiveLineupId(null)} className="rounded-full">
                           <ChevronLeft className="w-5 h-5" />

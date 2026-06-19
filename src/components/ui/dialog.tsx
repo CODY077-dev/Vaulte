@@ -13,8 +13,22 @@ function DialogTrigger({ ...props }: DialogPrimitive.Trigger.Props) {
   return <DialogPrimitive.Trigger data-slot="dialog-trigger" {...props} />
 }
 
-function DialogPortal({ ...props }: DialogPrimitive.Portal.Props) {
-  return <DialogPrimitive.Portal data-slot="dialog-portal" {...props} />
+function DialogPortal({ container, ...props }: DialogPrimitive.Portal.Props) {
+  // In the desktop phone-frame mockup, mount the dialog inside the frame so it
+  // doesn't escape to the full browser window. On real mobile the frame is
+  // hidden (display:none), so we fall back to the default body portal.
+  const [frame, setFrame] = React.useState<HTMLElement | null>(null)
+  React.useEffect(() => {
+    const el = document.getElementById("phone-frame")
+    setFrame(el && el.offsetParent !== null ? el : null)
+  }, [])
+  return (
+    <DialogPrimitive.Portal
+      data-slot="dialog-portal"
+      container={container ?? frame ?? undefined}
+      {...props}
+    />
+  )
 }
 
 function DialogClose({ ...props }: DialogPrimitive.Close.Props) {

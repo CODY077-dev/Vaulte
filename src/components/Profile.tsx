@@ -281,11 +281,11 @@ export default function Profile({ user, onLogout, onBack, onUpdateUser, isViewin
   };
 
   const menuItems = [
-    { icon: UserIcon, label: "Profile Info", color: "text-orange-500", bg: "bg-orange-50" },
-    { icon: Bell, label: "Notifications", color: "text-blue-500", bg: "bg-blue-50" },
-    { icon: Shield, label: "Privacy & Security", color: "text-purple-500", bg: "bg-purple-50" },
-    { icon: CreditCard, label: "Subscription", color: "text-amber-500", bg: "bg-amber-50" },
-    { icon: Settings, label: "App Settings", color: "text-slate-500", bg: "bg-slate-50" },
+    { icon: UserIcon, label: "Profile Info", color: "text-primary", bg: "bg-primary/10" },
+    { icon: Bell, label: "Notifications", color: "text-primary", bg: "bg-primary/10" },
+    { icon: Shield, label: "Privacy & Security", color: "text-primary", bg: "bg-primary/10" },
+    { icon: CreditCard, label: "Subscription", color: "text-primary", bg: "bg-primary/10" },
+    { icon: Settings, label: "App Settings", color: "text-primary", bg: "bg-primary/10" },
   ];
 
   const defaultStats = [
@@ -297,7 +297,7 @@ export default function Profile({ user, onLogout, onBack, onUpdateUser, isViewin
   const stats = user.role === "supporter" ? [] : defaultStats;
 
   return (
-    <div className="bg-slate-50 min-h-screen pb-24">
+    <div className="bg-slate-50 min-h-full pb-24">
       {/* Header Section */}
       <div className="pt-6 pb-4 px-4 space-y-6">
         <div className="flex justify-between items-center px-2">

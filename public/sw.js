@@ -1,4 +1,4 @@
-const CACHE_NAME = 'vaulte-v1';
+const CACHE_NAME = 'vaulte-v2';
 const STATIC_ASSETS = [
   '/',
   '/manifest.json',
@@ -54,12 +54,30 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // For static assets — cache first, then network
+  // App code (JS/CSS) — network-first so a new deploy is picked up immediately,
+  // falling back to cache only when offline. Prevents users being stuck on a
+  // stale build after an update.
+  const isAppCode = /\.(?:js|mjs|css)(?:\?|$)/.test(request.url);
+  if (isAppCode) {
+    event.respondWith(
+      fetch(request)
+        .then((response) => {
+          if (response.ok && request.url.startsWith(self.location.origin)) {
+            const clone = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
+          }
+          return response;
+        })
+        .catch(() => caches.match(request))
+    );
+    return;
+  }
+
+  // Images, icons, fonts, manifest — cache first, then network (rarely change)
   event.respondWith(
     caches.match(request).then((cached) => {
       if (cached) return cached;
       return fetch(request).then((response) => {
-        // Cache successful responses for static assets
         if (response.ok && request.url.startsWith(self.location.origin)) {
           const clone = response.clone();
           caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));

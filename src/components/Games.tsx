@@ -334,6 +334,10 @@ export default function Games({ user }: GamesProps) {
   const [realMatchEvents, setRealMatchEvents] = useState<any[]>([]);
   const [realCustomEvents, setRealCustomEvents] = useState<any[]>([]);
   const [expandedCompetitions, setExpandedCompetitions] = useState<Record<string, boolean>>({});
+  const [scoreInputGame, setScoreInputGame] = useState<any>(null);
+  const [scoreHome, setScoreHome] = useState('');
+  const [scoreAway, setScoreAway] = useState('');
+  const [savedScores, setSavedScores] = useState<Record<string, { home: number; away: number }>>({});
 
   const toggleCompetition = (name: string) => {
     setExpandedCompetitions(prev => ({ ...prev, [name]: !prev[name] }));
@@ -607,23 +611,8 @@ export default function Games({ user }: GamesProps) {
           className="bg-white rounded-2xl p-4 shadow-sm mx-4 mb-3 cursor-pointer active:scale-[0.99] transition-all relative"
           onClick={() => setSelectedGame(game as any)}
         >
-          {/* Status pill + league */}
-          <div className="flex items-center justify-between mb-3">
-            <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[9px] font-black uppercase tracking-[0.12em] ${
-              isToday && !isCompleted ? 'bg-emerald-50 text-emerald-600' : isCompleted ? 'bg-slate-100 text-slate-500' : 'bg-primary/10 text-primary'
-            }`}>
-              {isToday && !isCompleted && (
-                <span className="relative flex w-1.5 h-1.5">
-                  <span className="absolute inset-0 rounded-full bg-emerald-400 animate-ping opacity-75" />
-                  <span className="relative rounded-full w-1.5 h-1.5 bg-emerald-500" />
-                </span>
-              )}
-              {isToday && !isCompleted ? 'Today' : isCompleted ? 'Finished' : 'Upcoming'}
-            </span>
-            {game.league && (
-              <span className="text-[9px] font-bold text-slate-400 uppercase tracking-[0.16em]">{game.league}</span>
-            )}
-          </div>
+          {/* Spacer for top padding */}
+          <div className="mb-1" />
 
           {/* Teams row: home | score/vs | away */}
           <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
@@ -640,10 +629,23 @@ export default function Games({ user }: GamesProps) {
 
             {/* Score or VS */}
             <div className="text-center">
-              {(game as any).score ? (
+              {savedScores[game.id] ? (
+                <p className="text-[20px] font-black text-slate-900 tracking-tight tabular-nums leading-none">
+                  {savedScores[game.id].home}<span className="text-slate-300 mx-0.5">·</span>{savedScores[game.id].away}
+                </p>
+              ) : (game as any).score ? (
                 <p className="text-[20px] font-black text-slate-900 tracking-tight tabular-nums leading-none">
                   {(game as any).score.home}<span className="text-slate-300 mx-0.5">·</span>{(game as any).score.away}
                 </p>
+              ) : isCompleted && isCoach && gameFilter === 'finished' ? (
+                <button
+                  onClick={(e) => { e.stopPropagation(); setScoreInputGame(game); setScoreHome(''); setScoreAway(''); }}
+                  className="text-[11px] font-black text-primary uppercase tracking-wider active:scale-95 transition-all"
+                >
+                  Score?
+                </button>
+              ) : isCompleted && !isCoach ? (
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.16em]">TBD</p>
               ) : (
                 <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.16em]">vs</p>
               )}
@@ -1376,13 +1378,13 @@ export default function Games({ user }: GamesProps) {
   };
 
   return (
-      <div className="bg-white min-h-screen pb-24">
+      <div className="bg-white min-h-full pb-24">
       {/* Header Section */}
       <div className="pt-6 pb-4 px-4 space-y-5">
         <div className="flex items-end justify-between px-2">
           <div>
-            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-[0.24em]">Match Day Central</p>
-            <h1 className="text-[26px] font-black text-slate-900 uppercase italic leading-none tracking-tight mt-1">Games</h1>
+            <h1 className="text-[26px] font-black text-slate-900 uppercase italic leading-none tracking-tight">Games</h1>
+            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-[0.24em] mt-1">Match Day Central</p>
           </div>
           {isCoach && (
             <button
@@ -1628,6 +1630,87 @@ export default function Games({ user }: GamesProps) {
                     Delete
                   </button>
                 </div>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+
+      {/* Score Input Modal */}
+      <AnimatePresence>
+        {scoreInputGame && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              className="fixed inset-0 bg-black/50 z-[200]"
+              onClick={() => setScoreInputGame(null)}
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[210] w-[92%] max-w-sm bg-white rounded-[2rem] shadow-2xl overflow-hidden"
+            >
+              <div className="bg-slate-900 p-6 flex items-center justify-between shrink-0">
+                <div>
+                  <h3 className="text-white text-sm font-black uppercase tracking-widest">Final Score</h3>
+                  <p className="text-white/50 text-[9px] font-bold uppercase tracking-[0.2em] mt-1">Enter the match result</p>
+                </div>
+                <button onClick={() => setScoreInputGame(null)} className="text-white/70 hover:text-white transition-colors">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="p-6 space-y-6">
+                <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-4">
+                  <div className="flex flex-col items-center gap-2">
+                    <div className="w-12 h-12 rounded-xl bg-slate-100 flex items-center justify-center">
+                      <span className="text-[11px] font-black text-slate-500">
+                        {scoreInputGame.homeTeam?.split(' ').map((w: string) => w[0]).join('').toUpperCase().slice(0, 2)}
+                      </span>
+                    </div>
+                    <p className="text-[9px] font-black text-slate-700 uppercase tracking-wider text-center leading-tight">{scoreInputGame.homeTeam}</p>
+                    <input
+                      type="number"
+                      min="0"
+                      value={scoreHome}
+                      onChange={(e) => setScoreHome(e.target.value)}
+                      className="w-16 h-14 text-center text-2xl font-black text-slate-900 bg-slate-50 rounded-xl border border-slate-200 focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none"
+                      style={{ fontSize: 24 }}
+                      placeholder="0"
+                    />
+                  </div>
+                  <span className="text-slate-300 text-xl font-black mt-8">·</span>
+                  <div className="flex flex-col items-center gap-2">
+                    <div className="w-12 h-12 rounded-xl bg-slate-100 flex items-center justify-center">
+                      <span className="text-[11px] font-black text-slate-500">
+                        {scoreInputGame.awayTeam?.split(' ').map((w: string) => w[0]).join('').toUpperCase().slice(0, 2)}
+                      </span>
+                    </div>
+                    <p className="text-[9px] font-black text-slate-700 uppercase tracking-wider text-center leading-tight">{scoreInputGame.awayTeam}</p>
+                    <input
+                      type="number"
+                      min="0"
+                      value={scoreAway}
+                      onChange={(e) => setScoreAway(e.target.value)}
+                      className="w-16 h-14 text-center text-2xl font-black text-slate-900 bg-slate-50 rounded-xl border border-slate-200 focus:border-primary focus:ring-2 focus:ring-primary/20 outline-none"
+                      style={{ fontSize: 24 }}
+                      placeholder="0"
+                    />
+                  </div>
+                </div>
+                <button
+                  onClick={() => {
+                    const h = parseInt(scoreHome) || 0;
+                    const a = parseInt(scoreAway) || 0;
+                    setSavedScores(prev => ({ ...prev, [scoreInputGame.id]: { home: h, away: a } }));
+                    setScoreInputGame(null);
+                  }}
+                  disabled={scoreHome === '' && scoreAway === ''}
+                  className="w-full h-12 rounded-2xl bg-primary text-white font-bold text-sm shadow-lg shadow-primary/20 hover:opacity-90 active:scale-[0.98] transition-all disabled:opacity-40 flex items-center justify-center gap-2"
+                >
+                  <Trophy className="w-4 h-4" />
+                  Save Score
+                </button>
               </div>
             </motion.div>
           </>

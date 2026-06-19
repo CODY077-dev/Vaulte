@@ -41,9 +41,10 @@ interface ChatProps {
   memberRoles: Record<string, 'coach' | 'manager' | null>;
   onChatOpen?: (isOpen: boolean) => void;
   onUnreadCount?: (count: number) => void;
+  onTabChange?: (tab: string) => void;
 }
 
-export default function Chat({ user, memberRoles, onChatOpen, onUnreadCount }: ChatProps) {
+export default function Chat({ user, memberRoles, onChatOpen, onUnreadCount, onTabChange }: ChatProps) {
   const [selectedTeamId, setSelectedTeamId] = useState<string | null>(
     user.role === 'supporter' && user.linkedTeamId ? user.linkedTeamId : null
   );
@@ -587,7 +588,7 @@ export default function Chat({ user, memberRoles, onChatOpen, onUnreadCount }: C
   // ── Channel list view ─────────────────────────────────────
   if (!selectedTeamId) {
     return (
-      <div className="bg-white min-h-screen pb-24">
+      <div className="bg-white min-h-full pb-24">
         <div className="pt-6 pb-2 px-6 flex items-start justify-between">
           <div>
             <h1 className="text-2xl font-black text-slate-900 tracking-tight uppercase italic">Messages</h1>
@@ -604,6 +605,23 @@ export default function Chat({ user, memberRoles, onChatOpen, onUnreadCount }: C
           </button>
         </div>
 
+        {chatChannels.length === 0 ? (
+          <div className="flex flex-col items-center justify-center text-center px-8 pt-24">
+            <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center mb-4">
+              <MessageSquare className="w-7 h-7 text-primary" />
+            </div>
+            <h3 className="text-sm font-black text-slate-800 uppercase tracking-tight">No chats yet</h3>
+            <p className="text-xs font-medium text-slate-400 mt-1.5 leading-relaxed max-w-[240px]">
+              Join or create a team to start messaging your coaches and teammates.
+            </p>
+            <button
+              onClick={() => onTabChange?.('teams')}
+              className="mt-5 px-5 py-2.5 rounded-full bg-primary text-white text-[11px] font-black uppercase tracking-widest active:scale-95 transition-transform shadow-lg shadow-primary/20"
+            >
+              Go to Teams
+            </button>
+          </div>
+        ) : (
         <div className="divide-y divide-slate-100">
           {chatChannels.map(({ team, channel, teamName, unread, isCustom, customChat }, index) => {
             const roomId = isCustom ? `${team.id}_custom_${customChat.id}` : `${team.id}_${channel.id}`;
@@ -693,6 +711,7 @@ export default function Chat({ user, memberRoles, onChatOpen, onUnreadCount }: C
             );
           })}
         </div>
+        )}
 
         {/* Create Chat / Add Member Modal */}
         <AnimatePresence>
@@ -737,10 +756,15 @@ export default function Chat({ user, memberRoles, onChatOpen, onUnreadCount }: C
                     )}
                     <div>
                       <h2 className="text-white font-black uppercase italic text-lg">
-                        {chatModalMode === 'choose' ? 'Chat Options' :
+                        {chatModalMode === 'choose' ? 'New Chat' :
                          chatModalMode === 'create' ? (createStep === 'team' ? 'Select Team' : createStep === 'name' ? 'Chat Name' : 'Add Members') :
                          addMemberStep === 'team' ? 'Select Team' : addMemberStep === 'members' ? 'Select Members' : 'Select Chats'}
                       </h2>
+                      {chatModalMode === 'choose' && selectedTeamId && (
+                        <p className="text-white/50 text-[10px] font-bold uppercase tracking-widest">
+                          {teamNames[selectedTeamId] || chatTeams.find(t => t.id === selectedTeamId)?.name || ''}
+                        </p>
+                      )}
                       {chatModalMode !== 'choose' && (
                         <p className="text-white/50 text-[10px] font-bold uppercase tracking-widest">
                           {chatModalMode === 'create'
@@ -762,6 +786,7 @@ export default function Chat({ user, memberRoles, onChatOpen, onUnreadCount }: C
                   {/* ── Choose Mode ── */}
                   {chatModalMode === 'choose' && (
                     <>
+                      <p className="text-[10px] font-black uppercase tracking-widest text-primary mb-1">Choose Chat Type</p>
                       <button
                         onClick={() => {
                           setChatModalMode('create');
@@ -772,16 +797,15 @@ export default function Chat({ user, memberRoles, onChatOpen, onUnreadCount }: C
                             setCreateStep('team');
                           }
                         }}
-                        className="w-full flex items-center gap-4 p-4 bg-slate-50 rounded-2xl hover:bg-slate-100 transition-colors text-left"
+                        className="w-full flex items-center gap-4 p-4 bg-slate-50 rounded-2xl hover:bg-slate-100 transition-colors text-left border border-slate-100"
                       >
                         <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
-                          <Plus className="w-5 h-5 text-primary" />
+                          <Users className="w-5 h-5 text-primary" />
                         </div>
                         <div className="flex-1">
-                          <h4 className="font-bold text-slate-900 text-sm">Create a Chat</h4>
-                          <p className="text-[9px] text-slate-400 font-medium">Start a new group conversation</p>
+                          <h4 className="font-black text-slate-900 text-sm uppercase tracking-tight">Direct Chat</h4>
+                          <p className="text-[10px] text-slate-400 font-medium uppercase tracking-wide">One-on-one conversation</p>
                         </div>
-                        <ChevronDown className="w-4 h-4 text-slate-300 -rotate-90" />
                       </button>
                       <button
                         onClick={() => {
@@ -793,16 +817,15 @@ export default function Chat({ user, memberRoles, onChatOpen, onUnreadCount }: C
                             setAddMemberStep('team');
                           }
                         }}
-                        className="w-full flex items-center gap-4 p-4 bg-slate-50 rounded-2xl hover:bg-slate-100 transition-colors text-left"
+                        className="w-full flex items-center gap-4 p-4 bg-slate-50 rounded-2xl hover:bg-slate-100 transition-colors text-left border border-slate-100"
                       >
-                        <div className="w-10 h-10 rounded-full bg-emerald-500/10 flex items-center justify-center">
-                          <Users className="w-5 h-5 text-emerald-600" />
+                        <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
+                          <Users className="w-5 h-5 text-primary" />
                         </div>
                         <div className="flex-1">
-                          <h4 className="font-bold text-slate-900 text-sm">Add Member to Chat</h4>
-                          <p className="text-[9px] text-slate-400 font-medium">Add people to existing chats</p>
+                          <h4 className="font-black text-slate-900 text-sm uppercase tracking-tight">Group Chat</h4>
+                          <p className="text-[10px] text-slate-400 font-medium uppercase tracking-wide">Chat with multiple members</p>
                         </div>
-                        <ChevronDown className="w-4 h-4 text-slate-300 -rotate-90" />
                       </button>
                     </>
                   )}

@@ -114,7 +114,7 @@ export default function SupporterHome({ user, onTabChange }: SupporterHomeProps)
   const linkedTeam = MOCK_TEAMS.find(t => t.id === user?.linkedTeamId);
 
   return (
-    <div className="bg-slate-50 min-h-screen pb-24 px-4 pt-6 space-y-4">
+    <div className="bg-slate-50 min-h-full pb-24 px-4 pt-6 space-y-4">
       {/* Header & Player Card */}
       <motion.div 
         initial={{ opacity: 0, y: 8 }}

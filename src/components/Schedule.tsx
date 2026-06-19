@@ -27,6 +27,19 @@ import { canSend, recordSend } from "../utils/rateLimiter";
 import FirestoreService from '../services/FirestoreService';
 import DefaultAvatar from "./DefaultAvatar";
 
+// Time options for the event time dropdown — every 15 minutes, 12-hour format
+const TIME_OPTIONS: string[] = (() => {
+  const opts: string[] = [];
+  for (let h = 0; h < 24; h++) {
+    for (let m = 0; m < 60; m += 15) {
+      const period = h < 12 ? 'AM' : 'PM';
+      const hour12 = h % 12 === 0 ? 12 : h % 12;
+      opts.push(`${hour12}:${m.toString().padStart(2, '0')} ${period}`);
+    }
+  }
+  return opts;
+})();
+
 const getShortLocation = (location: string | undefined): string => {
   if (!location) return '';
   const beforeComma = location.split(',')[0].trim();
@@ -438,7 +451,7 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
   };
 
   return (
-    <div className="bg-white min-h-screen pb-24">
+    <div className="bg-white min-h-full pb-24">
       {/* Header */}
       <div className="pt-6 pb-4 px-4 flex justify-between items-center">
         <div className="space-y-2">
@@ -467,7 +480,7 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
             </DialogTrigger>
             <DialogContent
               showCloseButton={false}
-              className="sm:max-w-[425px] rounded-[2.5rem] p-0 border-none overflow-hidden bg-white max-h-[90vh] flex flex-col"
+              className="sm:max-w-[425px] rounded-[2.5rem] p-0 border-none overflow-hidden bg-white max-h-[90%] flex flex-col"
             >
               <div className="p-6 bg-slate-900 text-white shrink-0 flex items-center justify-between">
                 <div>
@@ -683,12 +696,20 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
                 {/* Time */}
                 <div className="space-y-2">
                   <label className="text-[11px] font-black text-slate-900 uppercase italic tracking-[0.18em] px-1">Time</label>
-                  <Input
-                    placeholder="e.g. 6:00 PM"
-                    value={newEvent.time}
-                    onChange={(e) => setNewEvent(prev => ({ ...prev, time: e.target.value }))}
-                    className="h-14 bg-slate-50 border-none rounded-2xl px-4 text-sm font-bold text-slate-700"
-                  />
+                  <div className="relative">
+                    <Clock className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
+                    <select
+                      value={newEvent.time}
+                      onChange={(e) => setNewEvent(prev => ({ ...prev, time: e.target.value }))}
+                      className="w-full h-14 bg-slate-50 border-none rounded-2xl pl-11 pr-10 text-sm font-bold text-slate-700 appearance-none focus:outline-none focus:ring-0 cursor-pointer"
+                    >
+                      {!newEvent.time && <option value="" disabled>Select a time</option>}
+                      {TIME_OPTIONS.map((t) => (
+                        <option key={t} value={t}>{t}</option>
+                      ))}
+                    </select>
+                    <ChevronDown className="absolute right-4 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400 pointer-events-none" />
+                  </div>
                 </div>
 
                 {/* Location — optional */}
@@ -1170,9 +1191,9 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
                     <CardContent className="p-0">
                       <button
                         onClick={() => setExpandedEventId(isExpanded ? null : event.id)}
-                        className="w-full px-3 py-2.5 flex items-center justify-between hover:bg-slate-50/50 transition-colors text-left"
+                        className="w-full px-4 pt-4 pb-3 flex items-start justify-between hover:bg-slate-50/50 transition-colors text-left"
                       >
-                        <div className="flex items-center gap-3">
+                        <div className="flex items-start gap-3.5 min-w-0">
                           <div className={`w-14 h-14 rounded-2xl flex flex-col items-center justify-center shrink-0 relative ${
                             event.type === 'match' ? 'bg-red-50 text-red-500' :
                             event.type === 'training' ? 'bg-blue-50 text-blue-500' :
@@ -1185,26 +1206,26 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
                             {event.type === 'meeting' && <Users className="w-5 h-5" />}
                             {event.type === 'event' && <PartyPopper className="w-5 h-5" />}
                             {event.type === 'custom' && <Pencil className="w-5 h-5" />}
-                            <span className="text-[8px] font-black uppercase mt-0.5">{event.type}</span>
+                            <span className="text-[8px] font-black uppercase mt-0.5 tracking-wide">{event.type}</span>
                             {(() => {
                               const myRecord = (attendanceData[event.id] || []).find((r: any) => r.userId === user?.id);
                               if (!myRecord?.status) return null;
                               return (
-                                <div className={`absolute -top-1 -right-1 w-3 h-3 rounded-full border-2 border-white shadow-sm ${
+                                <div className={`absolute -top-1 -right-1 w-3.5 h-3.5 rounded-full border-2 border-white shadow-sm ${
                                   myRecord.status === 'going' ? 'bg-green-500' : 'bg-red-500'
                                 }`} />
                               );
                             })()}
                           </div>
-                          <div>
+                          <div className="min-w-0 pt-0.5">
                             {(team || (event as any).teamName) && (
-                              <p className="text-[9px] font-black uppercase tracking-widest text-primary mb-0.5">{scheduleTeamNames[(team as any)?.id] || (team as any)?.name || (event as any).teamName}</p>
+                              <p className="text-[10px] font-black uppercase tracking-wider text-primary mb-0.5 truncate">{scheduleTeamNames[(team as any)?.id] || (team as any)?.name || (event as any).teamName}</p>
                             )}
-                            <h4 className="font-bold text-slate-900 text-sm">{event.title}</h4>
-                            <p className="text-[10px] text-slate-400 font-medium">{formatEventDate(event.date)} • {formatEventTime(event.time)}</p>
+                            <h4 className="font-bold text-slate-900 text-base leading-tight">{event.title}</h4>
+                            <p className="text-xs text-slate-400 font-medium mt-1">{formatEventDate(event.date)} • {formatEventTime(event.time)}</p>
                           </div>
                         </div>
-                        <ChevronDown className={`w-4 h-4 text-slate-300 transition-transform duration-300 ${isExpanded ? "rotate-180" : ""}`} />
+                        <ChevronDown className={`w-5 h-5 text-slate-300 shrink-0 mt-1 transition-transform duration-300 ${isExpanded ? "rotate-180" : ""}`} />
                       </button>
 
                       <AnimatePresence>
@@ -1215,17 +1236,17 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
                             exit={{ height: 0, opacity: 0 }}
                             className="px-4 pb-4 space-y-4"
                           >
-                            <div className="pl-14 space-y-2">
+                            <div className="space-y-2">
                               {event.location && (
                                 <button
                                   onClick={() => setLocationModalEvent(event)}
-                                  className="flex items-center gap-1 text-slate-400 hover:text-primary transition-colors"
+                                  className="flex items-center gap-1.5 text-slate-400 hover:text-primary transition-colors"
                                 >
-                                  <MapPin className="w-3 h-3" />
-                                  <span className="text-xs font-medium">{getShortLocation(event.pinLocation?.label || event.location)}</span>
+                                  <MapPin className="w-4 h-4 shrink-0" />
+                                  <span className="text-sm font-medium">{getShortLocation(event.pinLocation?.label || event.location)}</span>
                                 </button>
                               )}
-                              {event.notes && <p className="text-[10px] text-slate-400 italic">Note: {event.notes}</p>}
+                              {event.notes && <p className="text-xs text-slate-400 italic">Note: {event.notes}</p>}
                             </div>
 
                             <div className="pt-3 border-t border-slate-100 space-y-2">
@@ -1234,12 +1255,12 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
                                 const myRecord = (attendanceData[event.id] || []).find((r: any) => r.userId === user?.id);
                                 const myStatus = myRecord?.status || null;
                                 return (
-                                  <div className="flex gap-2">
+                                  <div className="flex gap-3">
                                     <button
                                       onClick={() => handleAttendance(event.id, 'going')}
-                                      className={`flex-1 h-8 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all active:scale-95 ${
+                                      className={`flex-1 h-12 rounded-2xl text-xs font-black uppercase tracking-widest transition-all active:scale-95 ${
                                         myStatus === 'going'
-                                          ? 'bg-green-500 text-white'
+                                          ? 'bg-green-500 text-white shadow-sm shadow-green-500/20'
                                           : 'bg-green-50 text-green-600 hover:bg-green-100'
                                       }`}
                                     >
@@ -1247,9 +1268,9 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
                                     </button>
                                     <button
                                       onClick={() => handleAttendance(event.id, 'absent')}
-                                      className={`flex-1 h-8 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all active:scale-95 ${
+                                      className={`flex-1 h-12 rounded-2xl text-xs font-black uppercase tracking-widest transition-all active:scale-95 ${
                                         myStatus === 'absent'
-                                          ? 'bg-red-500 text-white'
+                                          ? 'bg-red-500 text-white shadow-sm shadow-red-500/20'
                                           : 'bg-red-50 text-red-500 hover:bg-red-100'
                                       }`}
                                     >
@@ -1265,19 +1286,15 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
                                   const goingCount = (attendanceData[event.id] || []).filter((r: any) => r.status === 'going').length;
                                   const absentCount = (attendanceData[event.id] || []).filter((r: any) => r.status === 'absent').length;
                                   return (
-                                    <div className="flex items-center gap-2">
-                                      {goingCount > 0 && (
-                                        <span className="text-[9px] font-black text-green-600 uppercase tracking-widest">{goingCount} going</span>
-                                      )}
-                                      {absentCount > 0 && (
-                                        <span className="text-[9px] font-black text-red-400 uppercase tracking-widest">{absentCount} absent</span>
-                                      )}
+                                    <div className="flex items-center gap-3">
+                                      <span className="text-xs font-black text-green-600 uppercase tracking-wide">{goingCount} Going</span>
+                                      <span className="text-xs font-black text-red-400 uppercase tracking-wide">{absentCount} Absent</span>
                                     </div>
                                   );
                                 })()}
                                 <button
                                   onClick={() => { const data = StorageService.getAttendance(); setAttendanceData(data); setAttendanceModalEvent(event); }}
-                                  className="h-7 px-3 rounded-xl border border-slate-200 bg-white text-slate-500 text-[8px] font-black uppercase tracking-widest hover:bg-slate-50 active:scale-95 transition-all"
+                                  className="h-9 px-4 rounded-full border border-slate-200 bg-white text-slate-500 text-[10px] font-black uppercase tracking-widest hover:bg-slate-50 active:scale-95 transition-all"
                                 >
                                   View All
                                 </button>
@@ -1324,8 +1341,9 @@ export default function Schedule({ user, onTabChange }: ScheduleProps) {
                                 ) : (
                                   <button
                                     onClick={() => setConfirmDeleteId(event.id)}
-                                    className="w-full h-10 rounded-2xl border border-red-200 bg-white text-red-400 text-[9px] font-black uppercase tracking-widest transition-all hover:bg-red-50 active:scale-[0.98]"
+                                    className="w-full h-12 rounded-2xl bg-red-50 text-red-500 text-xs font-black uppercase tracking-widest transition-all hover:bg-red-100 active:scale-[0.98] flex items-center justify-center gap-2"
                                   >
+                                    <Trash2 className="w-4 h-4" />
                                     Delete Event
                                   </button>
                                 )

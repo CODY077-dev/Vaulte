@@ -80,6 +80,8 @@ export default function Home({ user, onTabChange, onUpdateUser }: HomeProps) {
   const [isUrgent, setIsUrgent] = useState(false);
   const [teamLogos, setTeamLogos] = useState<Record<string, string>>({});
   const [teamNames, setTeamNames] = useState<Record<string, string>>({});
+  const [isThisWeekOpen, setIsThisWeekOpen] = useState(false);
+  const [thisWeekExpandedId, setThisWeekExpandedId] = useState<string | null>(null);
 
   const [dismissedAnnouncementIds, setDismissedAnnouncementIds] = useState<Set<string>>(new Set());
   const [logoErrors, setLogoErrors] = useState<Record<string, boolean>>({});
@@ -485,7 +487,7 @@ export default function Home({ user, onTabChange, onUpdateUser }: HomeProps) {
   }, [user]);
 
   return (
-    <div className="bg-white min-h-screen pb-24">
+    <div className="bg-white min-h-full pb-24">
       {/* Header Section */}
       <div className="pt-6 pb-4 px-4 space-y-4">
         <div className="flex justify-between items-center px-2">
@@ -754,7 +756,7 @@ export default function Home({ user, onTabChange, onUpdateUser }: HomeProps) {
                     <span className="text-[9px] font-black italic text-slate-700 uppercase tracking-[0.14em]">Broadcast</span>
                   </button>
                   {/* Weekly attendance card */}
-                  <div className="bg-white rounded-2xl shadow-sm border border-slate-100 px-2 py-2 flex flex-col items-center justify-center">
+                  <button onClick={() => setIsThisWeekOpen(true)} className="bg-white rounded-2xl shadow-sm border border-slate-100 px-2 py-2 flex flex-col items-center justify-center active:scale-95 transition-transform">
                     <h3 className="text-[9px] font-black text-slate-700 uppercase italic tracking-[0.14em] mb-1.5">This Week</h3>
                     <div className="flex items-center gap-1.5 w-full">
                       <div className="flex flex-col items-center flex-1 bg-emerald-50 rounded-md py-1">
@@ -770,7 +772,7 @@ export default function Home({ user, onTabChange, onUpdateUser }: HomeProps) {
                         <span className="text-[5px] font-black text-slate-500 uppercase tracking-wider">TBD</span>
                       </div>
                     </div>
-                  </div>
+                  </button>
                   <button onClick={() => { localStorage.setItem('gameday_open_create_event', '1'); onTabChange('schedule'); }}
                     className="bg-white rounded-2xl p-3 flex flex-col items-center gap-1.5 active:scale-95 transition-transform shadow-sm border border-slate-100">
                     <div className="w-9 h-9 rounded-xl flex items-center justify-center bg-primary/10 text-primary">
@@ -811,7 +813,7 @@ export default function Home({ user, onTabChange, onUpdateUser }: HomeProps) {
             return (
               <div className="grid grid-cols-2 gap-2 px-4">
                 {/* Weekly attendance card */}
-                <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-3">
+                <button onClick={() => setIsThisWeekOpen(true)} className="bg-white rounded-2xl shadow-sm border border-slate-100 p-3 active:scale-95 transition-transform text-left">
                   <h3 className="text-[9px] font-black text-slate-900 uppercase italic tracking-[0.14em] mb-2">This Week</h3>
                   <div className="flex items-center gap-2">
                     <div className="flex flex-col items-center flex-1 bg-emerald-50 rounded-lg py-1.5">
@@ -827,7 +829,7 @@ export default function Home({ user, onTabChange, onUpdateUser }: HomeProps) {
                       <span className="text-[7px] font-black text-slate-500 uppercase tracking-wider">TBD</span>
                     </div>
                   </div>
-                </div>
+                </button>
                 {/* Events this week */}
                 <button
                   onClick={() => onTabChange('schedule')}
@@ -2784,6 +2786,167 @@ export default function Home({ user, onTabChange, onUpdateUser }: HomeProps) {
                     </AnimatePresence>
                   </>
                 )}
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+
+      {/* This Week Modal */}
+      <AnimatePresence>
+        {isThisWeekOpen && (
+          <>
+            <motion.div
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              className="fixed inset-0 bg-black/50 z-[200]"
+              onClick={() => { setIsThisWeekOpen(false); setThisWeekExpandedId(null); }}
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 20 }}
+              className="fixed top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-[210] w-[92%] max-w-sm max-h-[85vh] flex flex-col bg-white rounded-[2rem] shadow-2xl overflow-hidden"
+            >
+              <div className="bg-slate-900 p-6 flex items-center justify-between shrink-0">
+                <div>
+                  <h3 className="text-white text-sm font-black uppercase tracking-widest">This Week</h3>
+                  <p className="text-white/50 text-[9px] font-bold uppercase tracking-[0.2em] mt-1">Your event responses</p>
+                </div>
+                <button onClick={() => { setIsThisWeekOpen(false); setThisWeekExpandedId(null); }} className="text-white/70 hover:text-white transition-colors">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="overflow-y-auto p-4 space-y-4 max-h-[60vh]" style={{ scrollbarWidth: 'none' }}>
+                {(() => {
+                  const now = new Date();
+                  const startOfWeek = new Date(now);
+                  startOfWeek.setDate(now.getDate() - now.getDay() + 1);
+                  startOfWeek.setHours(0, 0, 0, 0);
+                  const endOfWeek = new Date(startOfWeek);
+                  endOfWeek.setDate(startOfWeek.getDate() + 6);
+                  endOfWeek.setHours(23, 59, 59, 999);
+
+                  const weekEvts = allEvents.filter(e => {
+                    const d = parseEventDate(e.date);
+                    return d >= startOfWeek && d <= endOfWeek;
+                  });
+
+                  const notReplied = weekEvts.filter(e => !attendance[e.id]?.status);
+                  const going = weekEvts.filter(e => attendance[e.id]?.status === 'going');
+                  const notGoing = weekEvts.filter(e => attendance[e.id]?.status === 'absent');
+
+                  const EVENT_TYPE_MAP: Record<string, { bg: string; text: string; label: string; Icon: any }> = {
+                    training: { bg: 'bg-blue-50', text: 'text-blue-600', label: 'Training', Icon: Activity },
+                    match: { bg: 'bg-red-50', text: 'text-red-600', label: 'Match', Icon: Trophy },
+                    meeting: { bg: 'bg-purple-50', text: 'text-purple-600', label: 'Meeting', Icon: Users },
+                    event: { bg: 'bg-amber-50', text: 'text-amber-600', label: 'Event', Icon: PartyPopper },
+                    custom: { bg: 'bg-slate-50', text: 'text-slate-600', label: 'Custom', Icon: Pencil },
+                  };
+
+                  const renderEventRow = (event: any) => {
+                    const st = EVENT_TYPE_MAP[event.type] || EVENT_TYPE_MAP.event;
+                    const isExpanded = thisWeekExpandedId === event.id;
+                    const team = squadTeams.find((t: any) => t.id === (event.teamId || user?.teamIds?.[0]));
+                    const eventDate = parseEventDate(event.date);
+                    const dateStr = eventDate.toLocaleDateString('en-NZ', { weekday: 'short', day: 'numeric', month: 'short' });
+
+                    return (
+                      <div key={event.id} className="rounded-2xl border border-primary/20 overflow-hidden bg-white shadow-sm">
+                        <button
+                          onClick={() => setThisWeekExpandedId(isExpanded ? null : event.id)}
+                          className="w-full p-3 flex items-center gap-3 text-left active:bg-slate-50 transition-colors"
+                        >
+                          <div className={`w-12 h-12 rounded-xl ${st.bg} flex flex-col items-center justify-center shrink-0`}>
+                            <st.Icon className={`w-4 h-4 ${st.text}`} />
+                            <span className={`text-[6px] font-black uppercase tracking-wider mt-0.5 ${st.text}`}>{st.label}</span>
+                          </div>
+                          <div className="flex-1 min-w-0">
+                            {team && (
+                              <p className="text-[8px] font-bold text-primary uppercase tracking-[0.18em] truncate">{team.name || team.teamName}</p>
+                            )}
+                            <p className="text-[12px] font-black text-slate-900 uppercase tracking-tight leading-tight truncate">{event.title}</p>
+                            <div className="flex items-center gap-2 text-slate-400 mt-0.5">
+                              <span className="flex items-center gap-0.5 text-[8px] font-bold uppercase tracking-wider">
+                                <Clock className="w-2.5 h-2.5" />{event.time}
+                              </span>
+                              {event.location && (
+                                <span className="flex items-center gap-0.5 text-[8px] font-bold uppercase tracking-wider truncate">
+                                  <MapPin className="w-2.5 h-2.5 shrink-0" />{getShortLocation(event.location)}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          <ChevronDown className={`w-4 h-4 text-slate-300 shrink-0 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
+                        </button>
+                        {isExpanded && (
+                          <motion.div
+                            initial={{ height: 0, opacity: 0 }}
+                            animate={{ height: 'auto', opacity: 1 }}
+                            exit={{ height: 0, opacity: 0 }}
+                            className="border-t border-slate-100 px-3 pb-3 pt-2"
+                          >
+                            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mb-2">{dateStr}</p>
+                            <div className="grid grid-cols-2 gap-2">
+                              <button
+                                onClick={() => {
+                                  handleAttendance(event.id, 'going', event.teamId);
+                                  setThisWeekExpandedId(null);
+                                }}
+                                className={cn(
+                                  "h-9 rounded-xl text-[9px] font-black uppercase tracking-widest flex items-center justify-center gap-1 active:scale-95 transition-all",
+                                  attendance[event.id]?.status === 'going'
+                                    ? "bg-emerald-500 text-white shadow-lg shadow-emerald-500/30"
+                                    : "bg-slate-100 text-slate-600"
+                                )}
+                              >
+                                <Check className="w-3 h-3" />I'm Going
+                              </button>
+                              <button
+                                onClick={() => {
+                                  handleAttendance(event.id, 'absent', event.teamId);
+                                  setThisWeekExpandedId(null);
+                                }}
+                                className={cn(
+                                  "h-9 rounded-xl text-[9px] font-black uppercase tracking-widest flex items-center justify-center gap-1 active:scale-95 transition-all",
+                                  attendance[event.id]?.status === 'absent'
+                                    ? "bg-rose-500 text-white shadow-lg shadow-rose-500/30"
+                                    : "bg-slate-100 text-slate-600"
+                                )}
+                              >
+                                <X className="w-3 h-3" />Can't Make It
+                              </button>
+                            </div>
+                          </motion.div>
+                        )}
+                      </div>
+                    );
+                  };
+
+                  const sections = [
+                    { key: 'notReplied', label: 'Not Replied', events: notReplied, color: 'text-amber-600', bg: 'bg-amber-50' },
+                    { key: 'going', label: 'Going', events: going, color: 'text-emerald-600', bg: 'bg-emerald-50' },
+                    { key: 'notGoing', label: 'Not Going', events: notGoing, color: 'text-rose-500', bg: 'bg-rose-50' },
+                  ];
+
+                  return weekEvts.length === 0 ? (
+                    <div className="py-8 text-center">
+                      <Calendar className="w-8 h-8 text-slate-300 mx-auto mb-2" />
+                      <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">No events this week</p>
+                    </div>
+                  ) : (
+                    sections.map(section => section.events.length > 0 && (
+                      <div key={section.key}>
+                        <div className="flex items-center gap-2 mb-2">
+                          <span className={`text-[9px] font-black uppercase tracking-widest ${section.color}`}>{section.label}</span>
+                          <span className={`${section.bg} ${section.color} text-[9px] font-black px-1.5 py-0.5 rounded-full`}>{section.events.length}</span>
+                        </div>
+                        <div className="space-y-2">
+                          {section.events.map(renderEventRow)}
+                        </div>
+                      </div>
+                    ))
+                  );
+                })()}
               </div>
             </motion.div>
           </>
